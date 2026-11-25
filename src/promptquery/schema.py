@@ -165,7 +165,9 @@ SELECT
     att.attname AS column_name,
     fns.nspname AS referenced_schema,
     fcls.relname AS referenced_table,
-    fatt.attname AS referenced_column
+    fatt.attname AS referenced_column,
+    con.conname AS constraint_name,
+    array_length(con.conkey, 1) AS ncols
 FROM pg_constraint con
 JOIN pg_class cls         ON cls.oid = con.conrelid
 JOIN pg_namespace ns      ON ns.oid = cls.relnamespace
@@ -179,6 +181,9 @@ WHERE con.contype = 'f'
   AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
 ORDER BY ns.nspname, cls.relname, con.conname, k.ord
 """
+
+
+TENANT_COLUMN = "tenant_id"
 
 
 def introspect(db: "Database") -> Schema:
@@ -214,6 +219,11 @@ def introspect(db: "Database") -> Schema:
         key = (row["schema"], row["table_name"])
         table = tables.get(key)
         if table is None:
+            continue
+        # Multi-tenant schemas declare FKs as (tenant_id, x_id) -> parent(tenant_id, id).
+        # The tenant_id half is not a business relationship; keeping it would link every
+        # table to every parent and make FK expansion pull in the whole schema.
+        if (row.get("ncols") or 1) > 1 and row["column_name"] == TENANT_COLUMN:
             continue
         table.foreign_keys.append(ForeignKey(
             column=row["column_name"],

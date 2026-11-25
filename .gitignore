@@ -61,3 +61,10 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# --- Atlas report bot local artifacts ---
+.cache/
+audit.jsonl
+*.jsonl
+*.dump
+report*.json

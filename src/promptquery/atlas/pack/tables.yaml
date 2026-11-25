@@ -1,0 +1,445 @@
+# Curated semantic layer for the Atlas ERP schema (PostgreSQL, multi-tenant).
+#
+# Every business table has a `tenant_id`; the database (Row-Level Security) already restricts
+# each session to one tenant, so queries NEVER filter or select tenant_id and never join on it.
+# Joins use the plain `id` columns. Enum-like VARCHAR columns and their legal values come from
+# enums.yaml. `internal: true` tables stay queryable but are left out of the prompt.
+#
+# desc  = grain + purpose (one line).   cols = notes only for non-obvious columns.
+
+tables:
+  # ------------------------------------------------------------------------- finance
+  fin_accounts:
+    module: finance
+    desc: Chart of accounts (one row per GL account).
+    cols:
+      account_type: ASSET / LIABILITY / EQUITY / REVENUE / EXPENSE.
+      is_postable: false for header/group accounts; only postable accounts carry journal lines.
+      is_cash_equivalent: true for bank/cash accounts (cash position = their balance).
+  fin_account_groups:
+    module: finance
+    desc: Hierarchical grouping of accounts (parent_id builds the tree).
+  fin_journal_entries:
+    module: finance
+    desc: Journal entry header (one per posted business event). Source of truth for the ledger.
+    cols:
+      status: Only POSTED entries count in reports; DRAFT is not yet booked, REVERSED was cancelled by a reversing entry.
+      posting_date: Date the entry hits the ledger; use it for period/month/year filters.
+      document_type: What produced the entry (AR_INVOICE, AP_INVOICE, PAYMENT, COGS, PAYROLL, DEPRECIATION, JOURNAL, ...).
+  fin_journal_lines:
+    module: finance
+    desc: Universal journal line (one debit OR credit on one account). All GL, P&L, balance-sheet, cost-center and project figures are aggregations of this table.
+    cols:
+      functional_debit_amount: Debit in the company (functional) currency; exactly one of debit/credit is > 0.
+      functional_credit_amount: Credit in the company (functional) currency.
+      transaction_debit_amount: Debit in the document currency (see currency_code).
+      transaction_credit_amount: Credit in the document currency.
+      is_posted: true once the parent entry is posted; equals journal entry status POSTED.
+      posting_date: Copy of the entry's posting_date (no join needed for date filters).
+      partner_type: CUSTOMER or VENDOR when the line belongs to a business partner.
+      partner_id: Customer or vendor id according to partner_type (no foreign key).
+  fin_fiscal_years:
+    module: finance
+    desc: Fiscal year (start_date..end_date).
+  fin_fiscal_periods:
+    module: finance
+    desc: Accounting period (month) inside a fiscal year; status OPEN/CLOSED.
+  fin_cost_centers:
+    module: finance
+    desc: Cost center master (hierarchical via parent_id).
+  fin_profit_centers:
+    module: finance
+    desc: Profit center master (hierarchical via parent_id).
+  fin_currencies:
+    module: finance
+    desc: Currency master; is_functional marks the company's reporting currency.
+  fin_exchange_rates:
+    module: finance
+    desc: Daily exchange rates between currencies.
+  fin_tax_codes:
+    module: finance
+    desc: Tax codes with rate_percent; direction OUTPUT (sales) or INPUT (purchases).
+  fin_posting_defaults:
+    module: finance
+    desc: Default GL account per posting purpose (ar_control, ap_control, sales_revenue, ...).
+  fin_customer_invoices:
+    module: finance
+    desc: Accounts-receivable invoice header (one per customer invoice). Open receivable = open_amount.
+    cols:
+      partner_id: Customer id -> sales_customers.id (no foreign key). partner_name is the denormalised customer name.
+      open_amount: Still unpaid amount (receivable). 0 once PAID. Overdue = due_date < today AND open_amount > 0.
+      gross_amount: Total including tax; net_amount excludes tax; tax_amount is the tax.
+      status: DRAFT is not booked; POSTED/PARTIALLY_PAID/PAID are booked; REVERSED was cancelled.
+  fin_customer_invoice_lines:
+    module: finance
+    desc: AR invoice line (revenue account, net amount, tax, cost center/project).
+  fin_customer_receipts:
+    module: finance
+    desc: Customer payment received (cash-in).
+    cols:
+      partner_id: Customer id -> sales_customers.id (no foreign key).
+  fin_customer_receipt_allocations:
+    module: finance
+    desc: Allocation of a receipt to customer invoices (allocated_amount).
+  fin_vendor_bills:
+    module: finance
+    desc: Accounts-payable bill header (one per vendor bill). Open payable = open_amount.
+    cols:
+      partner_id: Vendor id -> proc_vendors.id (no foreign key). partner_name is the denormalised vendor name.
+      open_amount: Still unpaid amount (payable). Overdue = due_date < today AND open_amount > 0.
+  fin_vendor_bill_lines:
+    module: finance
+    desc: AP bill line (expense/asset account, net amount, tax, cost center/project).
+  fin_vendor_payments:
+    module: finance
+    desc: Payment made to a vendor (cash-out).
+    cols:
+      partner_id: Vendor id -> proc_vendors.id (no foreign key).
+  fin_vendor_payment_allocations:
+    module: finance
+    desc: Allocation of a vendor payment to bills (allocated_amount).
+  fin_assets:
+    module: finance
+    desc: Fixed asset register (cost, salvage value, useful life, depreciation method).
+  fin_depreciation_runs:
+    module: finance
+    desc: Periodic depreciation run header.
+  fin_depreciation_entries:
+    module: finance
+    desc: Depreciation amount per asset per run (amount, accumulated_after, nbv_after = net book value).
+  fin_allocation_rules:
+    module: finance
+    desc: Cost allocation rule (source cost center distributed to targets).
+  fin_allocation_rule_targets:
+    module: finance
+    desc: Target cost centers and weights of an allocation rule.
+  fin_allocation_runs:
+    module: finance
+    desc: Executed cost allocation run.
+  fin_bank_statements:
+    module: finance
+    desc: Imported bank statement header (opening/closing balance).
+  fin_bank_statement_lines:
+    module: finance
+    desc: Bank statement line (amount, value_date, matching status).
+  fin_fx_revaluation_runs:
+    module: finance
+    desc: Foreign-currency revaluation run per period.
+
+  # --------------------------------------------------------------------------- sales
+  sales_customers:
+    module: sales
+    desc: Customer master.
+    cols:
+      status: ACTIVE usable; BLOCKED temporarily barred; INACTIVE retired.
+      credit_limit: Maximum allowed open receivable.
+  sales_customer_groups:
+    module: sales
+    desc: Customer grouping used for price lists.
+  sales_orders:
+    module: sales
+    desc: Sales order header (one per customer order). Order value = total_amount.
+    cols:
+      order_date: Date the order was placed; use it for monthly/period sales analysis.
+      status: Open orders (confirmed, not fully delivered) are CONFIRMED / PARTIALLY_DELIVERED; CREDIT_BLOCKED is held; DELIVERED/INVOICED/CLOSED are fulfilled; DRAFT and CANCELLED are not real demand.
+  sales_order_lines:
+    module: sales
+    desc: Sales order line (item, quantity, price). Quantity ordered vs delivered/invoiced/returned tracked per line.
+    cols:
+      ordered_quantity: Quantity ordered. Open to deliver = ordered_quantity - delivered_quantity.
+      line_amount: Line value after discount (excl. tax).
+  sales_quotes:
+    module: sales
+    desc: Sales quotation header.
+  sales_quote_lines:
+    module: sales
+    desc: Quotation line.
+  sales_deliveries:
+    module: sales
+    desc: Outbound delivery header (goods issue to customer) against a sales order.
+  sales_delivery_lines:
+    module: sales
+    desc: Delivery line (item, quantity shipped, bin).
+  sales_billings:
+    module: sales
+    desc: Sales billing document (the invoice raised from an order; posts to fin_customer_invoices).
+  sales_billing_lines:
+    module: sales
+    desc: Billing line.
+  sales_returns:
+    module: sales
+    desc: Customer return header.
+  sales_return_lines:
+    module: sales
+    desc: Customer return line.
+  sales_price_lists:
+    module: sales
+    desc: Price list header (validity, currency, customer group).
+  sales_price_list_items:
+    module: sales
+    desc: Price per item (and minimum quantity) in a price list.
+
+  # ---------------------------------------------------------------------- procurement
+  proc_vendors:
+    module: procurement
+    desc: Vendor (supplier) master.
+  proc_vendor_approved_items:
+    module: procurement
+    desc: Items a vendor is approved to supply (vendor item code).
+  proc_requisitions:
+    module: procurement
+    desc: Purchase requisition header.
+  proc_requisition_lines:
+    module: procurement
+    desc: Purchase requisition line.
+  proc_rfqs:
+    module: procurement
+    desc: Request for quotation header.
+  proc_rfq_lines:
+    module: procurement
+    desc: RFQ line with quoted_unit_cost.
+  proc_purchase_orders:
+    module: procurement
+    desc: Purchase order header (one per vendor order). Order value = total_amount.
+    cols:
+      status: Open POs are APPROVED / SENT / PARTIALLY_RECEIVED (and PENDING_APPROVAL); RECEIVED/CLOSED are complete; CANCELLED/REJECTED excluded.
+  proc_purchase_order_lines:
+    module: procurement
+    desc: Purchase order line (item, quantity, unit_cost). received_quantity and billed_quantity are running totals.
+    cols:
+      quantity: Quantity ordered. Open to receive = quantity - received_quantity.
+  proc_goods_receipts:
+    module: procurement
+    desc: Goods receipt header (inbound delivery against a PO).
+  proc_goods_receipt_lines:
+    module: procurement
+    desc: Goods receipt line (item, received_quantity, unit_cost).
+  proc_invoice_matches:
+    module: procurement
+    desc: Three-way invoice match header (vendor invoice vs PO vs receipt).
+  proc_invoice_match_lines:
+    module: procurement
+    desc: Invoice match line with price_variance and quantity_variance.
+  proc_match_tolerances:
+    module: procurement
+    desc: Price/quantity tolerance percentages for invoice matching.
+  proc_approval_rules:
+    module: procurement
+    desc: PO approval thresholds per document type.
+
+  # ----------------------------------------------------------------------- inventory
+  inv_items:
+    module: inventory
+    desc: Item master (product / material / service). "Product", "SKU", "material" mean item.
+    cols:
+      item_type: STOCKED is held in inventory; NON_STOCKED and SERVICE have no stock.
+      reorder_point: Reorder when on-hand falls to or below this quantity.
+  inv_item_categories:
+    module: inventory
+    desc: Item category (default costing method, GL accounts).
+    cols:
+      cogs_account_id: The COGS expense account for items of this category (account names differ per industry) -> fin_accounts.id.
+      inventory_account_id: The inventory asset account for this category -> fin_accounts.id.
+  inv_uoms:
+    module: inventory
+    desc: Units of measure.
+  inv_uom_conversions:
+    module: inventory
+    desc: Item-specific alternative unit conversion factors to the base unit.
+  inv_warehouses:
+    module: inventory
+    desc: Warehouse master.
+  inv_bins:
+    module: inventory
+    desc: Storage bin inside a warehouse (bins.warehouse_id -> inv_warehouses.id).
+  inv_stock_moves:
+    module: inventory
+    desc: Stock movement ledger (source of truth for quantity). quantity is ALWAYS positive; the direction comes from move_type and the bins.
+    cols:
+      move_type: RECEIPT adds to to_bin; ISSUE removes from from_bin; TRANSFER moves from_bin to to_bin; ADJUSTMENT adds to to_bin.
+      quantity: Always positive, in the item's base unit.
+      move_date: Date of the movement.
+  inv_stock_quants:
+    module: inventory
+    desc: Current on-hand quantity per item and bin (and lot). Sum on_hand_qty for stock on hand.
+  inv_item_valuations:
+    module: inventory
+    desc: Current inventory value per item and warehouse (on_hand_qty, avg_unit_cost, total_value). Inventory value = sum(total_value).
+  inv_cost_layers:
+    module: inventory
+    desc: FIFO cost layers (remaining_qty at unit_cost) per item and warehouse.
+  inv_layer_consumptions:
+    module: inventory
+    desc: FIFO layer consumption by issue moves (qty, cost).
+  inv_lots:
+    module: inventory
+    desc: Lot/batch master.
+  inv_serials:
+    module: inventory
+    desc: Serial number master.
+  inv_stock_counts:
+    module: inventory
+    desc: Physical/cycle stock count header.
+  inv_stock_count_lines:
+    module: inventory
+    desc: Stock count line with variance_qty = counted_qty - system_qty.
+
+  # ------------------------------------------------------------------- manufacturing
+  mfg_boms:
+    module: manufacturing
+    desc: Bill of materials header for a finished item (item_id) per version.
+  mfg_bom_components:
+    module: manufacturing
+    desc: BOM component (component_item_id, quantity_per, scrap_percent).
+  mfg_work_centers:
+    module: manufacturing
+    desc: Work center (capacity hours per day, efficiency).
+  mfg_routings:
+    module: manufacturing
+    desc: Routing header for an item.
+  mfg_routing_operations:
+    module: manufacturing
+    desc: Routing operation (work center, setup and run times).
+  mfg_production_orders:
+    module: manufacturing
+    desc: Production (manufacturing) order header for an item (quantity, finished_quantity, WIP cost).
+  mfg_production_order_components:
+    module: manufacturing
+    desc: Components required/issued for a production order.
+  mfg_production_order_operations:
+    module: manufacturing
+    desc: Operations planned for a production order.
+  mfg_mrp_runs:
+    module: manufacturing
+    desc: Material requirements planning run header.
+  mfg_planned_orders:
+    module: manufacturing
+    desc: MRP planned order (MAKE or BUY) with quantity and due_date.
+  mfg_capacity_loads:
+    module: manufacturing
+    desc: MRP capacity load per work center (utilization_percent, is_overloaded).
+
+  # ------------------------------------------------------------------------------ hr
+  hr_employees:
+    module: hr
+    desc: Employee master (names, department, position, manager, status, hire date). Compensation and personal IDs are NOT available.
+    cols:
+      manager_id: Employee id of the manager -> hr_employees.id.
+  hr_departments:
+    module: hr
+    desc: Department (hierarchical via parent_id; manager_employee_id -> hr_employees.id).
+  hr_positions:
+    module: hr
+    desc: Job position/title within a department.
+  hr_leave_types:
+    module: hr
+    desc: Leave type (annual, sick, ...).
+  hr_leave_balances:
+    module: hr
+    desc: Leave balance per employee and leave type (balance_days).
+  hr_leave_accruals:
+    module: hr
+    desc: Leave accrual log.
+    internal: true
+  hr_leave_requests:
+    module: hr
+    desc: Leave request (start_date..end_date, days, status).
+  hr_timesheets:
+    module: hr
+    desc: Weekly timesheet header per employee (total_hours, status).
+  hr_time_entries:
+    module: hr
+    desc: Time entry (hours on a date for a project/cost center; is_billable).
+
+  # -------------------------------------------------------------------------- crm
+  crm_leads:
+    module: crm
+    desc: Sales lead.
+  crm_opportunities:
+    module: crm
+    desc: Sales opportunity (stage, estimated_value, probability_percent, expected_close_date).
+  crm_opportunity_lines:
+    module: crm
+    desc: Opportunity line (item, quantity, estimated price).
+  crm_activities:
+    module: crm
+    desc: CRM activity (call, email, meeting, task) tied to a lead or opportunity.
+
+  # ---------------------------------------------------------------- projects / quality / maintenance
+  ps_projects:
+    module: projects
+    desc: Project (customer, budget_amount, status, dates).
+  ps_wbs_elements:
+    module: projects
+    desc: Work breakdown structure element of a project (budget_amount, is_billable).
+  qm_inspection_lots:
+    module: quality
+    desc: Quality inspection lot (quantity, accepted_quantity, rejected_quantity, disposition).
+  pm_equipment:
+    module: maintenance
+    desc: Equipment/asset master for maintenance.
+  pm_maintenance_plans:
+    module: maintenance
+    desc: Preventive maintenance plan (interval, next_due_date).
+  pm_maintenance_orders:
+    module: maintenance
+    desc: Maintenance work order (estimated_cost, actual_cost, scheduled/completed dates).
+
+  # ------------------------------------------------------------------- hospitality
+  hsp_menu_sections:
+    module: hospitality
+    desc: Menu section (hierarchical).
+  hsp_menu_placements:
+    module: hospitality
+    desc: Which item sits in which menu section.
+  hsp_menu_item_tags:
+    module: hospitality
+    desc: Tags on menu items (e.g. vegetarian).
+  hsp_menu_availability:
+    module: hospitality
+    desc: Item availability state (remaining_qty, available_until, reason).
+  hsp_order_tickets:
+    module: hospitality
+    desc: Restaurant order ticket (table, guest_count, total_amount, status).
+  hsp_order_ticket_lines:
+    module: hospitality
+    desc: Order ticket line (item, quantity, unit_price, line_amount).
+  hsp_table_reservations:
+    module: hospitality
+    desc: Table reservation (service_date, slot_start, party_size, status).
+  hsp_service_slots:
+    module: hospitality
+    desc: Reservation capacity per service slot (covers/parties booked vs max).
+  hsp_reservation_settings:
+    module: hospitality
+    desc: Reservation settings (service hours, party size limits).
+
+  # ------------------------------------------------------------------ core / admin
+  adm_tenants:
+    module: core
+    desc: The current tenant (company) record only.
+    internal: true
+  core_documents:
+    module: core
+    desc: Registry of business documents (doc_type, doc_number, status).
+    internal: true
+  core_doc_links:
+    module: core
+    desc: Document flow links between predecessor and successor documents.
+    internal: true
+  core_number_sequences:
+    module: core
+    desc: Document numbering sequences.
+    internal: true
+  core_number_sequence_counters:
+    module: core
+    desc: Per-year counters of number sequences.
+    internal: true
+  core_custom_field_defs:
+    module: core
+    desc: Custom field definitions.
+    internal: true
+  ind_tenant_industry_configs:
+    module: core
+    desc: Industry template applied to the tenant.
+    internal: true

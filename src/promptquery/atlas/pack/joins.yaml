@@ -1,0 +1,59 @@
+# Atlas declares foreign keys only between tables of the same module. Cross-module references
+# (e.g. sales_order_lines.item_id -> inv_items.id) are plain UUID columns with NO constraint.
+# Without this file the model cannot see those joins and guesses.
+#
+# Joins always use the plain `id` columns; never join on tenant_id (RLS already scopes it).
+# Every rule and explicit join here is verified against live data by tests/test_atlas_pack_live.py
+# (no orphan values), so a wrong entry fails CI instead of silently producing wrong SQL.
+
+# Column-name rule -> target table. Applied to every readable table's column that has no FK.
+rules:
+  item_id: inv_items
+  component_item_id: inv_items
+  customer_id: sales_customers
+  converted_customer_id: sales_customers
+  vendor_id: proc_vendors
+  warehouse_id: inv_warehouses
+  bin_id: inv_bins
+  from_bin_id: inv_bins
+  to_bin_id: inv_bins
+  uom_id: inv_uoms
+  base_uom_id: inv_uoms
+  alt_uom_id: inv_uoms
+  cost_center_id: fin_cost_centers
+  profit_center_id: fin_profit_centers
+  project_id: ps_projects
+  tax_code_id: fin_tax_codes
+  employee_id: hr_employees
+  owner_employee_id: hr_employees
+  manager_employee_id: hr_employees
+  inventory_account_id: fin_accounts
+  cogs_account_id: fin_accounts
+  price_difference_account_id: fin_accounts
+  gr_ir_account_id: fin_accounts
+  fiscal_period_id: fin_fiscal_periods
+  converted_quote_id: sales_quotes
+  inspect_lot_id: qm_inspection_lots
+  serial_id: inv_serials
+  matched_journal_line_id: fin_journal_lines
+
+# Joins that cannot be derived from a column name.
+explicit:
+  - {from: fin_customer_invoices.partner_id, to: sales_customers.id, note: "the invoice's customer"}
+  - {from: fin_customer_receipts.partner_id, to: sales_customers.id, note: "the paying customer"}
+  - {from: fin_vendor_bills.partner_id, to: proc_vendors.id, note: "the bill's vendor"}
+  - {from: fin_vendor_payments.partner_id, to: proc_vendors.id, note: "the paid vendor"}
+  - {from: fin_journal_lines.partner_id, to: sales_customers.id, when: "partner_type = 'CUSTOMER'"}
+  - {from: fin_journal_lines.partner_id, to: proc_vendors.id, when: "partner_type = 'VENDOR'"}
+  - {from: sales_billings.billing_number, to: fin_customer_invoices.external_ref, note: "a sales billing posts to exactly one customer invoice"}
+
+# Short recipes for multi-hop questions the model otherwise gets wrong.
+recipes:
+  - "Customer of a sales order line: sales_order_lines.order_id -> sales_orders.id, then sales_orders.customer_id -> sales_customers.id."
+  - "Item sold to a customer: sales_order_lines -> sales_orders (customer) and sales_order_lines.item_id -> inv_items.id."
+  - "Vendor of a purchase order line: proc_purchase_order_lines.po_id -> proc_purchase_orders.id, then proc_purchase_orders.vendor_id -> proc_vendors.id."
+  - "Department of an employee: hr_employees.department_id -> hr_departments.id; manager: hr_employees.manager_id -> hr_employees.id (self join)."
+  - "Stock by warehouse: inv_stock_quants.bin_id -> inv_bins.id, then inv_bins.warehouse_id -> inv_warehouses.id (quants have no warehouse column)."
+  - "Item valuation by warehouse: inv_item_valuations has item_id and warehouse_id directly."
+  - "Account of a journal line: fin_journal_lines.account_id -> fin_accounts.id; entry header: fin_journal_lines.journal_entry_id -> fin_journal_entries.id."
+  - "Invoice lines: fin_customer_invoice_lines.invoice_id -> fin_customer_invoices.id; bill lines: fin_vendor_bill_lines.bill_id -> fin_vendor_bills.id."

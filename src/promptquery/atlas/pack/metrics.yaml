@@ -1,0 +1,251 @@
+# Canonical business-metric definitions. The prompt tells the model to use these snippets
+# (adapting dates/grouping) instead of inventing its own. Definitions mirror Atlas's own
+# reporting KPIs (backend/app/modules/reporting + finance/sales/procurement queries).
+#
+# {as_of} is replaced by the configured "today" literal (a DATE like '2026-07-06').
+
+metrics:
+  revenue:
+    synonyms: [revenue, sales revenue, net sales, turnover, income, sales]
+    definition: >
+      Net revenue = credits minus debits on REVENUE accounts over POSTED journal lines, bounded by
+      posting_date. Equals the sum of net_amount of posted customer invoices. (Order value
+      total_amount on sales_orders includes tax, so it is NOT revenue.)
+    sql: |
+      SELECT COALESCE(SUM(l.functional_credit_amount - l.functional_debit_amount), 0) AS revenue
+      FROM fin_journal_lines l
+      JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND a.account_type = 'REVENUE'
+        AND l.posting_date BETWEEN DATE '2026-04-01' AND DATE '2026-04-30'
+
+  expenses:
+    synonyms: [expenses, costs, spend, operating expenses]
+    definition: Expenses = debits minus credits on EXPENSE accounts over POSTED journal lines (includes COGS).
+    sql: |
+      SELECT COALESCE(SUM(l.functional_debit_amount - l.functional_credit_amount), 0) AS expenses
+      FROM fin_journal_lines l
+      JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND a.account_type = 'EXPENSE'
+
+  net_income:
+    synonyms: [net income, net profit, profit, profit and loss, p&l, net result]
+    definition: Net income = revenue minus expenses (both from POSTED journal lines).
+    sql: |
+      SELECT COALESCE(SUM(l.functional_credit_amount - l.functional_debit_amount), 0) AS net_income
+      FROM fin_journal_lines l
+      JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND a.account_type IN ('REVENUE', 'EXPENSE')
+
+  gross_profit:
+    synonyms: [gross profit, gross margin, margin]
+    definition: >
+      Gross profit = revenue minus cost of goods sold. COGS accounts are the ones referenced by
+      inv_item_categories.cogs_account_id (their names differ per industry, e.g. 'COGS', 'Job Costs -
+      Materials', 'Cost of Food and Beverage Sold'); never match on the account name.
+    sql: |
+      SELECT COALESCE(SUM(CASE WHEN a.account_type = 'REVENUE' THEN l.functional_credit_amount - l.functional_debit_amount END), 0)
+           - COALESCE(SUM(CASE WHEN a.id IN (SELECT cogs_account_id FROM inv_item_categories) THEN l.functional_debit_amount - l.functional_credit_amount END), 0) AS gross_profit
+      FROM fin_journal_lines l
+      JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted
+
+  account_balance:
+    synonyms: [account balance, trial balance, ledger balance, gl balance]
+    definition: >
+      Balance of an account = SUM(functional_debit_amount - functional_credit_amount) over POSTED lines
+      (debit-positive). For LIABILITY, EQUITY and REVENUE accounts the natural balance is the negative of this.
+    sql: |
+      SELECT a.code, a.name, a.account_type,
+             SUM(l.functional_debit_amount - l.functional_credit_amount) AS balance
+      FROM fin_journal_lines l
+      JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND l.posting_date <= DATE '{as_of}'
+      GROUP BY a.code, a.name, a.account_type
+      ORDER BY a.code
+
+  cash_position:
+    synonyms: [cash position, cash balance, cash on hand, bank balance, cash]
+    definition: Cash position = SUM(debit - credit) of POSTED journal lines on is_cash_equivalent accounts, up to as_of.
+    sql: |
+      SELECT COALESCE(SUM(l.functional_debit_amount - l.functional_credit_amount), 0) AS cash_position
+      FROM fin_journal_lines l
+      JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND a.is_cash_equivalent AND l.posting_date <= DATE '{as_of}'
+
+  ar_open:
+    synonyms: [accounts receivable, receivables, AR, outstanding invoices, open invoices, unpaid invoices, amounts owed by customers]
+    definition: Open receivable = SUM(open_amount) of booked customer invoices (status POSTED or PARTIALLY_PAID).
+    sql: |
+      SELECT COALESCE(SUM(open_amount), 0) AS open_receivable
+      FROM fin_customer_invoices
+      WHERE status IN ('POSTED', 'PARTIALLY_PAID') AND open_amount > 0
+
+  ar_overdue:
+    synonyms: [overdue invoices, past due invoices, overdue receivables, late payments from customers]
+    definition: Overdue receivable = booked invoices with open_amount > 0 and due_date before as_of.
+    sql: |
+      SELECT i.invoice_number, i.partner_name AS customer, i.due_date,
+             DATE '{as_of}' - i.due_date AS days_overdue, i.open_amount
+      FROM fin_customer_invoices i
+      WHERE i.status IN ('POSTED', 'PARTIALLY_PAID') AND i.open_amount > 0 AND i.due_date < DATE '{as_of}'
+      ORDER BY days_overdue DESC
+
+  ar_aging:
+    synonyms: [AR aging, receivables aging, ageing, aged receivables, aging buckets]
+    definition: >
+      Aging buckets by days past due (as_of - due_date): current (<= 0), 1-30, 31-60, 61-90, over 90,
+      summing open_amount of booked invoices (POSTED / PARTIALLY_PAID).
+    sql: |
+      SELECT CASE WHEN DATE '{as_of}' - due_date <= 0 THEN 'Current'
+                  WHEN DATE '{as_of}' - due_date <= 30 THEN '1-30'
+                  WHEN DATE '{as_of}' - due_date <= 60 THEN '31-60'
+                  WHEN DATE '{as_of}' - due_date <= 90 THEN '61-90'
+                  ELSE 'Over 90' END AS bucket,
+             SUM(open_amount) AS open_amount
+      FROM fin_customer_invoices
+      WHERE status IN ('POSTED', 'PARTIALLY_PAID') AND open_amount > 0
+      GROUP BY 1
+
+  ap_open:
+    synonyms: [accounts payable, payables, AP, unpaid bills, open bills, amounts owed to vendors]
+    definition: Open payable = SUM(open_amount) of booked vendor bills (status POSTED or PARTIALLY_PAID).
+    sql: |
+      SELECT COALESCE(SUM(open_amount), 0) AS open_payable
+      FROM fin_vendor_bills
+      WHERE status IN ('POSTED', 'PARTIALLY_PAID') AND open_amount > 0
+
+  ap_aging:
+    synonyms: [AP aging, payables aging, aged payables]
+    definition: Same buckets as AR aging, over fin_vendor_bills.
+    sql: |
+      SELECT CASE WHEN DATE '{as_of}' - due_date <= 0 THEN 'Current'
+                  WHEN DATE '{as_of}' - due_date <= 30 THEN '1-30'
+                  WHEN DATE '{as_of}' - due_date <= 60 THEN '31-60'
+                  WHEN DATE '{as_of}' - due_date <= 90 THEN '61-90'
+                  ELSE 'Over 90' END AS bucket,
+             SUM(open_amount) AS open_amount
+      FROM fin_vendor_bills
+      WHERE status IN ('POSTED', 'PARTIALLY_PAID') AND open_amount > 0
+      GROUP BY 1
+
+  open_sales_orders:
+    synonyms: [open sales orders, open orders, backlog, orders awaiting delivery, unfulfilled orders]
+    definition: Open sales orders = status CONFIRMED or PARTIALLY_DELIVERED. Count and SUM(total_amount).
+    sql: |
+      SELECT COUNT(*) AS open_orders, COALESCE(SUM(total_amount), 0) AS open_value
+      FROM sales_orders
+      WHERE status IN ('CONFIRMED', 'PARTIALLY_DELIVERED')
+
+  order_value:
+    synonyms: [sales orders, order value, ordered amount, bookings, order total]
+    definition: >
+      Order value = SUM(total_amount, includes tax) of sales orders that are not DRAFT or CANCELLED,
+      by order_date.
+    sql: |
+      SELECT COUNT(*) AS orders, COALESCE(SUM(total_amount), 0) AS order_value
+      FROM sales_orders
+      WHERE status NOT IN ('DRAFT', 'CANCELLED')
+
+  open_purchase_orders:
+    synonyms: [open purchase orders, open POs, outstanding purchase orders, POs awaiting receipt]
+    definition: Open POs = status APPROVED, SENT or PARTIALLY_RECEIVED. Count and SUM(total_amount).
+    sql: |
+      SELECT COUNT(*) AS open_pos, COALESCE(SUM(total_amount), 0) AS open_value
+      FROM proc_purchase_orders
+      WHERE status IN ('APPROVED', 'SENT', 'PARTIALLY_RECEIVED')
+
+  otd_percent:
+    synonyms: [on-time delivery, OTD, delivery performance, on time delivery rate]
+    definition: >
+      On-time delivery % = of POSTED deliveries whose sales order has a requested_date, the share with
+      delivery_date <= requested_date. Deliveries on orders without requested_date are excluded.
+    sql: |
+      SELECT COUNT(*) AS deliveries,
+             SUM(CASE WHEN d.delivery_date <= o.requested_date THEN 1 ELSE 0 END) AS on_time,
+             ROUND(100.0 * SUM(CASE WHEN d.delivery_date <= o.requested_date THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS otd_percent
+      FROM sales_deliveries d
+      JOIN sales_orders o ON o.id = d.sales_order_id
+      WHERE d.status = 'POSTED' AND o.requested_date IS NOT NULL
+
+  inventory_value:
+    synonyms: [inventory value, stock value, inventory valuation, value of stock]
+    definition: Inventory value = SUM(total_value) of inv_item_valuations (per item and warehouse).
+    sql: |
+      SELECT COALESCE(SUM(total_value), 0) AS inventory_value
+      FROM inv_item_valuations
+
+  stock_on_hand:
+    synonyms: [stock on hand, on-hand quantity, inventory level, stock levels, quantity in stock]
+    definition: On-hand quantity = SUM(on_hand_qty) of inv_stock_quants per item (across bins/warehouses).
+    sql: |
+      SELECT i.item_code, i.name, SUM(q.on_hand_qty) AS on_hand
+      FROM inv_stock_quants q
+      JOIN inv_items i ON i.id = q.item_id
+      GROUP BY i.item_code, i.name
+      ORDER BY on_hand DESC
+
+  low_stock:
+    synonyms: [low stock, below reorder point, reorder, items to reorder, stockouts]
+    definition: Low stock = STOCKED items whose total on-hand quantity is at or below reorder_point.
+    sql: |
+      SELECT i.item_code, i.name, COALESCE(SUM(q.on_hand_qty), 0) AS on_hand, i.reorder_point
+      FROM inv_items i
+      LEFT JOIN inv_stock_quants q ON q.item_id = i.id
+      WHERE i.item_type = 'STOCKED' AND i.is_active AND i.reorder_point IS NOT NULL
+      GROUP BY i.item_code, i.name, i.reorder_point
+      HAVING COALESCE(SUM(q.on_hand_qty), 0) <= i.reorder_point
+
+  sales_by_customer:
+    synonyms: [sales by customer, top customers, revenue by customer, customer ranking]
+    definition: >
+      Revenue per customer = SUM(net_amount) of booked customer invoices (POSTED, PARTIALLY_PAID, PAID) grouped by customer;
+      invoices carry the customer in partner_id -> sales_customers.id.
+    sql: |
+      SELECT c.name AS customer, SUM(i.net_amount) AS revenue
+      FROM fin_customer_invoices i
+      JOIN sales_customers c ON c.id = i.partner_id
+      WHERE i.status IN ('POSTED', 'PARTIALLY_PAID', 'PAID')
+      GROUP BY c.name
+      ORDER BY revenue DESC
+
+  sales_by_item:
+    synonyms: [sales by item, sales by product, top products, best sellers, top selling items]
+    definition: Sales per item = SUM(line_amount) of sales order lines on orders that are not DRAFT or CANCELLED.
+    sql: |
+      SELECT i.item_code, i.name, SUM(l.ordered_quantity) AS quantity, SUM(l.line_amount) AS amount
+      FROM sales_order_lines l
+      JOIN sales_orders o ON o.id = l.order_id
+      JOIN inv_items i ON i.id = l.item_id
+      WHERE o.status NOT IN ('DRAFT', 'CANCELLED')
+      GROUP BY i.item_code, i.name
+      ORDER BY amount DESC
+
+  purchases_by_vendor:
+    synonyms: [spend by vendor, purchases by vendor, purchases by supplier, vendor spend, top vendors]
+    definition: Purchase spend per vendor = SUM(total_amount) of purchase orders that are not DRAFT, REJECTED or CANCELLED.
+    sql: |
+      SELECT v.name AS vendor, SUM(p.total_amount) AS spend
+      FROM proc_purchase_orders p
+      JOIN proc_vendors v ON v.id = p.vendor_id
+      WHERE p.status NOT IN ('DRAFT', 'REJECTED', 'CANCELLED')
+      GROUP BY v.name
+      ORDER BY spend DESC
+
+  headcount:
+    synonyms: [headcount, employees, number of employees, staff count, workforce]
+    definition: Headcount = employees with status ACTIVE (ON_LEAVE are still employed; TERMINATED are not).
+    sql: |
+      SELECT COUNT(*) AS headcount
+      FROM hr_employees
+      WHERE status = 'ACTIVE'
+
+  pipeline:
+    synonyms: [pipeline, sales pipeline, open opportunities, weighted pipeline, forecast]
+    definition: >
+      Open pipeline = opportunities not WON or LOST; weighted value = estimated_value * probability_percent / 100.
+    sql: |
+      SELECT stage, COUNT(*) AS opportunities, SUM(estimated_value) AS value,
+             SUM(estimated_value * probability_percent / 100.0) AS weighted_value
+      FROM crm_opportunities
+      WHERE stage NOT IN ('WON', 'LOST')
+      GROUP BY stage

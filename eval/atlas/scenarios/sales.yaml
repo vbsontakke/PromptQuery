@@ -1,0 +1,246 @@
+# Sales scenarios. As-of date: 2026-07-06.
+# "Real" orders exclude DRAFT and CANCELLED. Open orders are CONFIRMED / PARTIALLY_DELIVERED.
+
+- id: sales_order_drilldown_6
+  tenant: acme
+  split: dev
+  tags: [sales, multi_turn, six_turn]
+  turns:
+    - user: "Show the total order value and number of orders for each month."
+      gold_sql: |
+        SELECT date_trunc('month', order_date)::date AS month, COUNT(*) AS orders, SUM(total_amount) AS order_value
+        FROM sales_orders WHERE status NOT IN ('DRAFT','CANCELLED') GROUP BY 1
+    - user: "Which month had the highest order value?"
+      gold_sql: |
+        SELECT date_trunc('month', order_date)::date AS month, SUM(total_amount) AS order_value
+        FROM sales_orders WHERE status NOT IN ('DRAFT','CANCELLED') GROUP BY 1 ORDER BY order_value DESC LIMIT 1
+    - user: "List the orders placed in that month."
+      gold_sql: |
+        SELECT o.order_number, c.name, o.order_date, o.status, o.total_amount
+        FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED') AND o.order_date >= DATE '2026-06-01' AND o.order_date < DATE '2026-07-01'
+    - user: "Which of those are still open?"
+      gold_sql: |
+        SELECT o.order_number, c.name, o.order_date, o.status, o.total_amount
+        FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status IN ('CONFIRMED','PARTIALLY_DELIVERED') AND o.order_date >= DATE '2026-06-01' AND o.order_date < DATE '2026-07-01'
+    - user: "What items are on those open orders?"
+      gold_sql: |
+        SELECT o.order_number, i.item_code, i.name, l.ordered_quantity
+        FROM sales_order_lines l JOIN sales_orders o ON o.id = l.order_id JOIN inv_items i ON i.id = l.item_id
+        WHERE o.status IN ('CONFIRMED','PARTIALLY_DELIVERED') AND o.order_date >= DATE '2026-06-01' AND o.order_date < DATE '2026-07-01'
+    - user: "How much of each of those items is still waiting to be delivered?"
+      gold_sql: |
+        SELECT i.item_code, SUM(l.ordered_quantity - l.delivered_quantity) AS open_quantity
+        FROM sales_order_lines l JOIN sales_orders o ON o.id = l.order_id JOIN inv_items i ON i.id = l.item_id
+        WHERE o.status IN ('CONFIRMED','PARTIALLY_DELIVERED') AND o.order_date >= DATE '2026-06-01' AND o.order_date < DATE '2026-07-01'
+        GROUP BY i.item_code
+
+- id: sales_volume_customer_6
+  tenant: volume
+  split: heldout
+  tags: [sales, multi_turn, six_turn, volume]
+  turns:
+    - user: "Who are the top 5 customers by total order value?"
+      gold_sql: |
+        SELECT c.name, SUM(o.total_amount) AS order_value
+        FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED') GROUP BY c.name ORDER BY order_value DESC, c.name LIMIT 5
+      compare: {order: true}
+    - user: "How many orders has the number one customer placed?"
+      gold_sql: |
+        SELECT COUNT(*) AS orders FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED') AND c.name = 'Volume Customer 23'
+    - user: "Show that customer's order value by year."
+      gold_sql: |
+        SELECT EXTRACT(YEAR FROM o.order_date)::int AS year, SUM(o.total_amount) AS order_value
+        FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED') AND c.name = 'Volume Customer 23' GROUP BY 1
+    - user: "What was their biggest single order?"
+      gold_sql: |
+        SELECT o.order_number, o.order_date, o.total_amount
+        FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED') AND c.name = 'Volume Customer 23'
+        ORDER BY o.total_amount DESC, o.order_number LIMIT 1
+    - user: "Which items were on that order?"
+      gold_sql: |
+        SELECT i.item_code, i.name, l.ordered_quantity, l.line_amount
+        FROM sales_order_lines l JOIN inv_items i ON i.id = l.item_id
+        WHERE l.order_id = (SELECT o.id FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+                            WHERE o.status NOT IN ('DRAFT','CANCELLED') AND c.name = 'Volume Customer 23'
+                            ORDER BY o.total_amount DESC, o.order_number LIMIT 1)
+    - user: "What is the combined quantity of those items?"
+      gold_sql: |
+        SELECT SUM(l.ordered_quantity) AS total_quantity
+        FROM sales_order_lines l
+        WHERE l.order_id = (SELECT o.id FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+                            WHERE o.status NOT IN ('DRAFT','CANCELLED') AND c.name = 'Volume Customer 23'
+                            ORDER BY o.total_amount DESC, o.order_number LIMIT 1)
+
+- id: sales_open_orders_3
+  tenant: manufacturing
+  split: dev
+  tags: [sales, multi_turn]
+  turns:
+    - user: "How many open sales orders do we have and what is their total value?"
+      gold_sql: |
+        SELECT COUNT(*) AS open_orders, COALESCE(SUM(total_amount), 0) AS open_value
+        FROM sales_orders WHERE status IN ('CONFIRMED','PARTIALLY_DELIVERED')
+    - user: "Show them by customer."
+      gold_sql: |
+        SELECT c.name, COUNT(*) AS open_orders, SUM(o.total_amount) AS open_value
+        FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status IN ('CONFIRMED','PARTIALLY_DELIVERED') GROUP BY c.name
+    - user: "Which of these orders have not been delivered at all yet?"
+      gold_sql: |
+        SELECT o.order_number, c.name, o.order_date, o.total_amount
+        FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status = 'CONFIRMED'
+
+- id: sales_volume_year_4
+  tenant: volume
+  split: dev
+  tags: [sales, multi_turn, volume]
+  turns:
+    - user: "Show order value by year."
+      gold_sql: |
+        SELECT EXTRACT(YEAR FROM order_date)::int AS year, SUM(total_amount) AS order_value
+        FROM sales_orders WHERE status NOT IN ('DRAFT','CANCELLED') GROUP BY 1
+    - user: "Break 2025 down by quarter."
+      gold_sql: |
+        SELECT EXTRACT(QUARTER FROM order_date)::int AS quarter, SUM(total_amount) AS order_value
+        FROM sales_orders WHERE status NOT IN ('DRAFT','CANCELLED') AND EXTRACT(YEAR FROM order_date) = 2025 GROUP BY 1
+    - user: "Which quarter was the strongest?"
+      gold_sql: |
+        SELECT EXTRACT(QUARTER FROM order_date)::int AS quarter, SUM(total_amount) AS order_value
+        FROM sales_orders WHERE status NOT IN ('DRAFT','CANCELLED') AND EXTRACT(YEAR FROM order_date) = 2025
+        GROUP BY 1 ORDER BY order_value DESC LIMIT 1
+    - user: "How many orders were placed in that quarter?"
+      gold_sql: |
+        SELECT COUNT(*) AS orders FROM sales_orders
+        WHERE status NOT IN ('DRAFT','CANCELLED') AND EXTRACT(YEAR FROM order_date) = 2025
+          AND EXTRACT(QUARTER FROM order_date) = (
+            SELECT EXTRACT(QUARTER FROM order_date)::int FROM sales_orders
+            WHERE status NOT IN ('DRAFT','CANCELLED') AND EXTRACT(YEAR FROM order_date) = 2025
+            GROUP BY 1 ORDER BY SUM(total_amount) DESC LIMIT 1)
+
+- id: sales_open_orders_single
+  tenant: acme
+  split: dev
+  tags: [sales, single]
+  turns:
+    - user: "How many sales orders are open right now and what is their combined value?"
+      gold_sql: |
+        SELECT COUNT(*) AS open_orders, COALESCE(SUM(total_amount), 0) AS open_value
+        FROM sales_orders WHERE status IN ('CONFIRMED','PARTIALLY_DELIVERED')
+
+- id: sales_otd
+  tenant: acme
+  split: heldout
+  tags: [sales, single]
+  turns:
+    - user: "What is our on-time delivery percentage?"
+      gold_sql: |
+        SELECT ROUND(100.0 * SUM(CASE WHEN d.delivery_date <= o.requested_date THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS otd_percent
+        FROM sales_deliveries d JOIN sales_orders o ON o.id = d.sales_order_id
+        WHERE d.status = 'POSTED' AND o.requested_date IS NOT NULL
+
+- id: sales_late_deliveries
+  tenant: acme
+  split: dev
+  tags: [sales, single]
+  turns:
+    - user: "Which deliveries shipped after the date the customer requested?"
+      gold_sql: |
+        SELECT d.delivery_number, o.order_number, o.requested_date, d.delivery_date
+        FROM sales_deliveries d JOIN sales_orders o ON o.id = d.sales_order_id
+        WHERE d.status = 'POSTED' AND d.delivery_date > o.requested_date
+
+- id: sales_avg_order
+  tenant: acme
+  split: heldout
+  tags: [sales, single]
+  turns:
+    - user: "What is the average value of a sales order?"
+      gold_sql: |
+        SELECT AVG(total_amount) AS avg_order_value FROM sales_orders WHERE status NOT IN ('DRAFT','CANCELLED')
+
+- id: sales_partial_orders
+  tenant: acme
+  split: dev
+  tags: [sales, single]
+  turns:
+    - user: "Which sales orders have only been partially delivered?"
+      gold_sql: |
+        SELECT o.order_number, c.name, o.total_amount
+        FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status = 'PARTIALLY_DELIVERED'
+
+- id: sales_quotes_by_status
+  tenant: acme
+  split: heldout
+  tags: [sales, single]
+  turns:
+    - user: "How many quotes do we have in each status?"
+      gold_sql: |
+        SELECT status, COUNT(*) AS quotes FROM sales_quotes GROUP BY status
+
+- id: sales_customers_credit
+  tenant: acme
+  split: dev
+  tags: [sales, single]
+  turns:
+    - user: "List our active customers with their credit limit and payment terms."
+      gold_sql: |
+        SELECT name, credit_limit, payment_terms_days FROM sales_customers WHERE status = 'ACTIVE'
+
+- id: sales_volume_orders_2025
+  tenant: volume
+  split: dev
+  tags: [sales, single, volume]
+  turns:
+    - user: "How many sales orders were placed in 2025?"
+      gold_sql: |
+        SELECT COUNT(*) AS orders FROM sales_orders
+        WHERE status NOT IN ('DRAFT','CANCELLED') AND order_date >= DATE '2025-01-01' AND order_date < DATE '2026-01-01'
+
+- id: sales_volume_top_items
+  tenant: volume
+  split: heldout
+  tags: [sales, single, volume]
+  turns:
+    - user: "Which 5 items have been ordered in the largest quantities?"
+      gold_sql: |
+        SELECT i.item_code, i.name, SUM(l.ordered_quantity) AS quantity
+        FROM sales_order_lines l JOIN sales_orders o ON o.id = l.order_id JOIN inv_items i ON i.id = l.item_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED') GROUP BY i.item_code, i.name
+        ORDER BY quantity DESC, i.item_code LIMIT 5
+
+- id: sales_volume_this_year
+  tenant: volume
+  split: dev
+  tags: [sales, single, volume]
+  turns:
+    - user: "What is the order value so far this year?"
+      gold_sql: |
+        SELECT SUM(total_amount) AS order_value FROM sales_orders
+        WHERE status NOT IN ('DRAFT','CANCELLED') AND order_date >= DATE '2026-01-01' AND order_date <= DATE '2026-07-06'
+
+- id: sales_volume_last_month
+  tenant: volume
+  split: heldout
+  tags: [sales, single, volume]
+  turns:
+    - user: "How many orders did we receive last month?"
+      gold_sql: |
+        SELECT COUNT(*) AS orders FROM sales_orders
+        WHERE status NOT IN ('DRAFT','CANCELLED') AND order_date >= DATE '2026-06-01' AND order_date < DATE '2026-07-01'
+
+- id: sales_volume_customer_count
+  tenant: volume
+  split: dev
+  tags: [sales, single, volume]
+  turns:
+    - user: "How many active customers do we have?"
+      gold_sql: |
+        SELECT COUNT(*) AS customers FROM sales_customers WHERE status = 'ACTIVE'

@@ -1,0 +1,295 @@
+# Verified question -> SQL examples shown to the model as patterns (top matches by similarity).
+#
+# Rules (enforced by tests/test_atlas_examples.py):
+#   * every `sql` validates, runs and returns rows on its `tenant` (live DB test);
+#   * no example question or SQL may duplicate an evaluation scenario (the eval would be a lie);
+#   * `refuse` examples carry no SQL.
+# As-of date for relative periods in these examples: 2026-07-06.
+
+examples:
+  # ----------------------------------------------------------------- finance
+  - q: "What was the revenue in April 2026?"
+    tenant: acme
+    sql: |
+      SELECT COALESCE(SUM(l.functional_credit_amount - l.functional_debit_amount), 0) AS revenue
+      FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND a.account_type = 'REVENUE'
+        AND l.posting_date >= DATE '2026-04-01' AND l.posting_date < DATE '2026-05-01'
+  - q: "Show total debits and credits for each account type."
+    tenant: acme
+    sql: |
+      SELECT a.account_type, SUM(l.functional_debit_amount) AS debits, SUM(l.functional_credit_amount) AS credits
+      FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted GROUP BY a.account_type
+  - q: "What is the balance of the Accounts Receivable ledger account?"
+    tenant: acme
+    sql: |
+      SELECT SUM(l.functional_debit_amount - l.functional_credit_amount) AS balance
+      FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND a.name = 'Accounts Receivable'
+  - q: "How much cash did we have at the end of May 2026?"
+    tenant: acme
+    sql: |
+      SELECT COALESCE(SUM(l.functional_debit_amount - l.functional_credit_amount), 0) AS cash
+      FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND a.is_cash_equivalent AND l.posting_date <= DATE '2026-05-31'
+  - q: "List the journal entries posted in June 2026 with their document type."
+    tenant: acme
+    sql: |
+      SELECT entry_number, posting_date, document_type, description
+      FROM fin_journal_entries
+      WHERE status = 'POSTED' AND posting_date >= DATE '2026-06-01' AND posting_date < DATE '2026-07-01'
+      ORDER BY posting_date, entry_number
+  - q: "Which expense accounts had postings in the second quarter of 2026?"
+    tenant: acme
+    sql: |
+      SELECT DISTINCT a.code, a.name
+      FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND a.account_type = 'EXPENSE'
+        AND l.posting_date >= DATE '2026-04-01' AND l.posting_date < DATE '2026-07-01'
+      ORDER BY a.code
+  - q: "What is the total amount of vendor bills issued in May 2026?"
+    tenant: acme
+    sql: |
+      SELECT COALESCE(SUM(gross_amount), 0) AS billed
+      FROM fin_vendor_bills
+      WHERE status IN ('POSTED','PARTIALLY_PAID','PAID')
+        AND bill_date >= DATE '2026-05-01' AND bill_date < DATE '2026-06-01'
+  - q: "How many customer invoices are still unpaid?"
+    tenant: acme
+    sql: |
+      SELECT COUNT(*) AS unpaid_invoices
+      FROM fin_customer_invoices
+      WHERE status IN ('POSTED','PARTIALLY_PAID') AND open_amount > 0
+  - q: "Which vendors have never sent us a bill?"
+    tenant: acme
+    sql: |
+      SELECT v.name FROM proc_vendors v
+      WHERE NOT EXISTS (SELECT 1 FROM fin_vendor_bills b WHERE b.partner_id = v.id)
+      ORDER BY v.name
+  - q: "Show revenue and expenses side by side for each month of 2026."
+    tenant: acme
+    sql: |
+      SELECT date_trunc('month', l.posting_date)::date AS month,
+             SUM(CASE WHEN a.account_type = 'REVENUE' THEN l.functional_credit_amount - l.functional_debit_amount ELSE 0 END) AS revenue,
+             SUM(CASE WHEN a.account_type = 'EXPENSE' THEN l.functional_debit_amount - l.functional_credit_amount ELSE 0 END) AS expenses
+      FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND l.posting_date >= DATE '2026-01-01' AND l.posting_date < DATE '2027-01-01'
+      GROUP BY 1 ORDER BY 1
+  - q: "How much revenue did we book in 2024?"
+    tenant: volume
+    sql: |
+      SELECT SUM(l.functional_credit_amount - l.functional_debit_amount) AS revenue
+      FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND a.account_type = 'REVENUE'
+        AND l.posting_date >= DATE '2024-01-01' AND l.posting_date < DATE '2025-01-01'
+  - q: "What was the average monthly revenue during 2024?"
+    tenant: volume
+    sql: |
+      SELECT AVG(m.revenue) AS avg_monthly_revenue
+      FROM (SELECT date_trunc('month', l.posting_date) AS month,
+                   SUM(l.functional_credit_amount - l.functional_debit_amount) AS revenue
+            FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+            WHERE l.is_posted AND a.account_type = 'REVENUE'
+              AND l.posting_date >= DATE '2024-01-01' AND l.posting_date < DATE '2025-01-01'
+            GROUP BY 1) m
+  - q: "What was the net income in the second quarter of 2025?"
+    tenant: volume
+    sql: |
+      SELECT SUM(l.functional_credit_amount - l.functional_debit_amount) AS net_income
+      FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+      WHERE l.is_posted AND a.account_type IN ('REVENUE','EXPENSE')
+        AND l.posting_date >= DATE '2025-04-01' AND l.posting_date < DATE '2025-07-01'
+
+  # ------------------------------------------------------------------- sales
+  - q: "How many orders did each customer place in April 2026?"
+    tenant: acme
+    sql: |
+      SELECT c.name, COUNT(*) AS orders
+      FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+      WHERE o.status NOT IN ('DRAFT','CANCELLED') AND o.order_date >= DATE '2026-04-01' AND o.order_date < DATE '2026-05-01'
+      GROUP BY c.name ORDER BY c.name
+  - q: "Which customers currently have an open order?"
+    tenant: acme
+    sql: |
+      SELECT DISTINCT c.name
+      FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+      WHERE o.status IN ('CONFIRMED','PARTIALLY_DELIVERED')
+      ORDER BY c.name
+  - q: "What total quantity of each item has been ordered by customers?"
+    tenant: acme
+    sql: |
+      SELECT i.item_code, i.name, SUM(l.ordered_quantity) AS quantity
+      FROM sales_order_lines l JOIN sales_orders o ON o.id = l.order_id JOIN inv_items i ON i.id = l.item_id
+      WHERE o.status NOT IN ('DRAFT','CANCELLED') GROUP BY i.item_code, i.name ORDER BY quantity DESC, i.item_code
+  - q: "List the sales orders worth more than 800."
+    tenant: acme
+    sql: |
+      SELECT o.order_number, c.name, o.order_date, o.total_amount
+      FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+      WHERE o.status NOT IN ('DRAFT','CANCELLED') AND o.total_amount > 800
+      ORDER BY o.total_amount DESC, o.order_number
+  - q: "Show the three most recent sales orders."
+    tenant: acme
+    sql: |
+      SELECT o.order_number, c.name, o.order_date, o.total_amount
+      FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+      WHERE o.status NOT IN ('DRAFT','CANCELLED')
+      ORDER BY o.order_date DESC, o.order_number DESC LIMIT 3
+  - q: "On average, how many days pass between the order date and the date the customer wants delivery?"
+    tenant: acme
+    sql: |
+      SELECT AVG(requested_date - order_date) AS avg_days
+      FROM sales_orders WHERE requested_date IS NOT NULL AND status NOT IN ('DRAFT','CANCELLED')
+  - q: "How many sales orders reached the closed status in each month?"
+    tenant: acme
+    sql: |
+      SELECT date_trunc('month', order_date)::date AS month, COUNT(*) AS closed_orders
+      FROM sales_orders WHERE status = 'CLOSED' GROUP BY 1 ORDER BY 1
+  - q: "Show the order value for each quarter of 2024."
+    tenant: volume
+    sql: |
+      SELECT EXTRACT(QUARTER FROM order_date)::int AS quarter, SUM(total_amount) AS order_value
+      FROM sales_orders
+      WHERE status NOT IN ('DRAFT','CANCELLED') AND order_date >= DATE '2024-01-01' AND order_date < DATE '2025-01-01'
+      GROUP BY 1 ORDER BY 1
+  - q: "Which customer ordered the most in 2024 by value?"
+    tenant: volume
+    sql: |
+      SELECT c.name, SUM(o.total_amount) AS order_value
+      FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+      WHERE o.status NOT IN ('DRAFT','CANCELLED') AND o.order_date >= DATE '2024-01-01' AND o.order_date < DATE '2025-01-01'
+      GROUP BY c.name ORDER BY order_value DESC, c.name LIMIT 1
+  - q: "Which items have never been sold?"
+    tenant: acme
+    sql: |
+      SELECT i.item_code, i.name FROM inv_items i
+      WHERE NOT EXISTS (SELECT 1 FROM sales_order_lines l WHERE l.item_id = i.id)
+      ORDER BY i.item_code
+  - q: "How many quotes were accepted or converted into orders?"
+    tenant: acme
+    sql: |
+      SELECT COUNT(*) AS quotes FROM sales_quotes WHERE status IN ('ACCEPTED','CONVERTED')
+
+  # ------------------------------------------------------------- procurement
+  - q: "How many purchase orders did we place in May 2026?"
+    tenant: acme
+    sql: |
+      SELECT COUNT(*) AS purchase_orders FROM proc_purchase_orders
+      WHERE status NOT IN ('DRAFT','REJECTED','CANCELLED') AND order_date >= DATE '2026-05-01' AND order_date < DATE '2026-06-01'
+  - q: "What is the total purchase order value per month?"
+    tenant: acme
+    sql: |
+      SELECT date_trunc('month', order_date)::date AS month, SUM(total_amount) AS po_value
+      FROM proc_purchase_orders WHERE status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY 1 ORDER BY 1
+  - q: "List the purchase order lines with the quantity ordered and the quantity received."
+    tenant: acme
+    sql: |
+      SELECT p.po_number, i.item_code, l.quantity, l.received_quantity
+      FROM proc_purchase_order_lines l JOIN proc_purchase_orders p ON p.id = l.po_id JOIN inv_items i ON i.id = l.item_id
+      ORDER BY p.po_number, l.line_number
+  - q: "What is the value of goods received from each vendor?"
+    tenant: acme
+    sql: |
+      SELECT v.name, SUM(gl.received_quantity * gl.unit_cost) AS received_value
+      FROM proc_goods_receipt_lines gl JOIN proc_goods_receipts g ON g.id = gl.gr_id JOIN proc_vendors v ON v.id = g.vendor_id
+      WHERE g.status = 'POSTED' GROUP BY v.name ORDER BY received_value DESC, v.name
+  - q: "Which vendor offers the shortest payment terms?"
+    tenant: acme
+    sql: |
+      SELECT name, payment_terms_days FROM proc_vendors ORDER BY payment_terms_days, name LIMIT 1
+
+  # --------------------------------------------------------------- inventory
+  - q: "How much of each item is stored in each warehouse?"
+    tenant: acme
+    sql: |
+      SELECT w.name AS warehouse, i.item_code, SUM(q.on_hand_qty) AS on_hand
+      FROM inv_stock_quants q JOIN inv_bins b ON b.id = q.bin_id JOIN inv_warehouses w ON w.id = b.warehouse_id JOIN inv_items i ON i.id = q.item_id
+      GROUP BY w.name, i.item_code ORDER BY w.name, i.item_code
+  - q: "List the items with more than 1000 units in stock."
+    tenant: acme
+    sql: |
+      SELECT i.item_code, i.name, SUM(q.on_hand_qty) AS on_hand
+      FROM inv_stock_quants q JOIN inv_items i ON i.id = q.item_id
+      GROUP BY i.item_code, i.name HAVING SUM(q.on_hand_qty) > 1000 ORDER BY on_hand DESC
+  - q: "How many units did we receive into stock in April 2026?"
+    tenant: acme
+    sql: |
+      SELECT COALESCE(SUM(quantity), 0) AS received_units FROM inv_stock_moves
+      WHERE move_type = 'RECEIPT' AND move_date >= DATE '2026-04-01' AND move_date < DATE '2026-05-01'
+  - q: "What is the inventory value in each warehouse?"
+    tenant: acme
+    sql: |
+      SELECT w.name AS warehouse, SUM(v.total_value) AS value
+      FROM inv_item_valuations v JOIN inv_warehouses w ON w.id = v.warehouse_id GROUP BY w.name
+  - q: "Which items have had no stock movements at all?"
+    tenant: acme
+    sql: |
+      SELECT i.item_code, i.name FROM inv_items i
+      WHERE NOT EXISTS (SELECT 1 FROM inv_stock_moves m WHERE m.item_id = i.id)
+      ORDER BY i.item_code
+  - q: "What is the average unit cost of each stocked item?"
+    tenant: acme
+    sql: |
+      SELECT i.item_code, v.avg_unit_cost
+      FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id ORDER BY i.item_code
+
+  # ------------------------------------------------------- people and other
+  - q: "How many employees were hired in each year?"
+    tenant: acme
+    sql: |
+      SELECT EXTRACT(YEAR FROM hire_date)::int AS year, COUNT(*) AS hires
+      FROM hr_employees GROUP BY 1 ORDER BY 1
+  - q: "How many employees do we have for each employment type?"
+    tenant: acme
+    sql: |
+      SELECT employment_type, COUNT(*) AS employees FROM hr_employees WHERE status <> 'TERMINATED' GROUP BY employment_type
+  - q: "What are the total timesheet hours for each week?"
+    tenant: acme
+    sql: |
+      SELECT period_start, SUM(total_hours) AS hours FROM hr_timesheets GROUP BY period_start ORDER BY period_start
+  - q: "What is the total estimated value of opportunities in each stage?"
+    tenant: acme
+    sql: |
+      SELECT stage, SUM(estimated_value) AS value FROM crm_opportunities GROUP BY stage
+  - q: "How many CRM activities do we have for each type?"
+    tenant: acme
+    sql: |
+      SELECT activity_type, COUNT(*) AS activities FROM crm_activities GROUP BY activity_type
+  - q: "Show each project's budget next to the sum of its work breakdown budgets."
+    tenant: acme
+    sql: |
+      SELECT p.code, p.budget_amount, COALESCE(SUM(w.budget_amount), 0) AS wbs_budget
+      FROM ps_projects p LEFT JOIN ps_wbs_elements w ON w.project_id = p.id
+      GROUP BY p.code, p.budget_amount ORDER BY p.code
+  - q: "How many units are planned in each production order status?"
+    tenant: acme
+    sql: |
+      SELECT status, SUM(quantity) AS planned_units FROM mfg_production_orders GROUP BY status
+  - q: "What share of inspected units were rejected?"
+    tenant: acme
+    sql: |
+      SELECT ROUND(100.0 * SUM(rejected_quantity) / NULLIF(SUM(quantity), 0), 2) AS rejection_rate_pct FROM qm_inspection_lots
+  - q: "List the maintenance orders scheduled before July 2026 that are not completed."
+    tenant: acme
+    sql: |
+      SELECT order_number, order_type, status, scheduled_date
+      FROM pm_maintenance_orders WHERE scheduled_date < DATE '2026-07-01' AND status <> 'COMPLETED'
+  - q: "What is the average value of settled restaurant tickets?"
+    tenant: hospitality
+    sql: |
+      SELECT AVG(total_amount) AS avg_ticket FROM hsp_order_tickets WHERE status = 'SETTLED'
+  - q: "How many guests are booked for each reservation status?"
+    tenant: hospitality
+    sql: |
+      SELECT status, SUM(party_size) AS guests FROM hsp_table_reservations GROUP BY status
+
+  # ----------------------------------------------------------------- refusals
+  - q: "What is the total payroll cost per employee?"
+    refuse: "Compensation and payroll data is not available to this assistant."
+  - q: "Which employees earn more than 50000?"
+    refuse: "Salary data is not available to this assistant."
+  - q: "Update the credit limit of Northwind Traders to 1000000."
+    refuse: "This assistant is read-only and cannot change data."
+  - q: "Dump the whole users table."
+    refuse: "User accounts and credentials are not available to this assistant."

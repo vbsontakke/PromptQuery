@@ -1,0 +1,365 @@
+# Finance scenarios. As-of date for all relative periods: 2026-07-06.
+# Every gold query runs through the same scoped, read-only path as the bot.
+
+# ------------------------------------------------------------------ six-turn
+- id: fin_ar_drilldown_6
+  tenant: acme
+  split: dev
+  tags: [finance, multi_turn, six_turn]
+  turns:
+    - user: "Show open receivables by customer."
+      gold_sql: |
+        SELECT c.name, SUM(i.open_amount) AS open_amount
+        FROM fin_customer_invoices i JOIN sales_customers c ON c.id = i.partner_id
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID') AND i.open_amount > 0
+        GROUP BY c.name
+    - user: "Only include invoices that are already overdue."
+      gold_sql: |
+        SELECT c.name, SUM(i.open_amount) AS overdue_amount
+        FROM fin_customer_invoices i JOIN sales_customers c ON c.id = i.partner_id
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID') AND i.open_amount > 0 AND i.due_date < DATE '2026-07-06'
+        GROUP BY c.name
+    - user: "Which customer has the largest overdue amount?"
+      gold_sql: |
+        SELECT c.name, SUM(i.open_amount) AS overdue_amount
+        FROM fin_customer_invoices i JOIN sales_customers c ON c.id = i.partner_id
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID') AND i.open_amount > 0 AND i.due_date < DATE '2026-07-06'
+        GROUP BY c.name ORDER BY overdue_amount DESC, c.name LIMIT 1
+    - user: "List that customer's overdue invoices."
+      gold_sql: |
+        SELECT i.invoice_number, i.invoice_date, i.due_date, i.open_amount
+        FROM fin_customer_invoices i JOIN sales_customers c ON c.id = i.partner_id
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID') AND i.open_amount > 0 AND i.due_date < DATE '2026-07-06'
+          AND c.name = (SELECT c2.name FROM fin_customer_invoices i2 JOIN sales_customers c2 ON c2.id = i2.partner_id
+                        WHERE i2.status IN ('POSTED','PARTIALLY_PAID') AND i2.open_amount > 0 AND i2.due_date < DATE '2026-07-06'
+                        GROUP BY c2.name ORDER BY SUM(i2.open_amount) DESC, c2.name LIMIT 1)
+    - user: "How many days overdue is the oldest of those invoices?"
+      gold_sql: |
+        SELECT MAX(DATE '2026-07-06' - i.due_date) AS days_overdue
+        FROM fin_customer_invoices i JOIN sales_customers c ON c.id = i.partner_id
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID') AND i.open_amount > 0 AND i.due_date < DATE '2026-07-06'
+          AND c.name = (SELECT c2.name FROM fin_customer_invoices i2 JOIN sales_customers c2 ON c2.id = i2.partner_id
+                        WHERE i2.status IN ('POSTED','PARTIALLY_PAID') AND i2.open_amount > 0 AND i2.due_date < DATE '2026-07-06'
+                        GROUP BY c2.name ORDER BY SUM(i2.open_amount) DESC, c2.name LIMIT 1)
+    - user: "Now show the aging buckets for all customers."
+      gold_sql: |
+        SELECT CASE WHEN DATE '2026-07-06' - due_date <= 0 THEN 'Current'
+                    WHEN DATE '2026-07-06' - due_date <= 30 THEN '1-30'
+                    WHEN DATE '2026-07-06' - due_date <= 60 THEN '31-60'
+                    WHEN DATE '2026-07-06' - due_date <= 90 THEN '61-90'
+                    ELSE 'Over 90' END AS bucket, SUM(open_amount) AS open_amount
+        FROM fin_customer_invoices WHERE status IN ('POSTED','PARTIALLY_PAID') AND open_amount > 0 GROUP BY 1
+
+- id: fin_pnl_walk_6
+  tenant: retail
+  split: heldout
+  tags: [finance, multi_turn, six_turn]
+  turns:
+    - user: "What is our total revenue?"
+      gold_sql: |
+        SELECT COALESCE(SUM(l.functional_credit_amount - l.functional_debit_amount), 0) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE'
+    - user: "And what are the total expenses?"
+      gold_sql: |
+        SELECT COALESCE(SUM(l.functional_debit_amount - l.functional_credit_amount), 0) AS expenses
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'EXPENSE'
+    - user: "So what is the net income?"
+      gold_sql: |
+        SELECT COALESCE(SUM(l.functional_credit_amount - l.functional_debit_amount), 0) AS net_income
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type IN ('REVENUE','EXPENSE')
+    - user: "Break the expenses down by account."
+      gold_sql: |
+        SELECT a.code, a.name, SUM(l.functional_debit_amount - l.functional_credit_amount) AS expense
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'EXPENSE' GROUP BY a.code, a.name
+    - user: "Which account is the largest?"
+      gold_sql: |
+        SELECT a.code, a.name, SUM(l.functional_debit_amount - l.functional_credit_amount) AS expense
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'EXPENSE' GROUP BY a.code, a.name
+        ORDER BY expense DESC, a.code LIMIT 1
+    - user: "How many posted journal lines are booked on that account?"
+      gold_sql: |
+        SELECT COUNT(*) AS posted_lines
+        FROM fin_journal_lines l
+        WHERE l.is_posted AND l.account_id = (
+          SELECT a.id FROM fin_journal_lines l2 JOIN fin_accounts a ON a.id = l2.account_id
+          WHERE l2.is_posted AND a.account_type = 'EXPENSE'
+          GROUP BY a.id, a.code ORDER BY SUM(l2.functional_debit_amount - l2.functional_credit_amount) DESC, a.code LIMIT 1)
+
+- id: fin_volume_trend_6
+  tenant: volume
+  split: dev
+  tags: [finance, multi_turn, six_turn, volume]
+  turns:
+    - user: "Show revenue by year."
+      gold_sql: |
+        SELECT EXTRACT(YEAR FROM l.posting_date)::int AS year,
+               SUM(l.functional_credit_amount - l.functional_debit_amount) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE' GROUP BY 1
+    - user: "Which year was the highest?"
+      gold_sql: |
+        SELECT EXTRACT(YEAR FROM l.posting_date)::int AS year,
+               SUM(l.functional_credit_amount - l.functional_debit_amount) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE' GROUP BY 1 ORDER BY revenue DESC LIMIT 1
+    - user: "Show that year's revenue by quarter."
+      gold_sql: |
+        SELECT EXTRACT(QUARTER FROM l.posting_date)::int AS quarter,
+               SUM(l.functional_credit_amount - l.functional_debit_amount) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE' AND EXTRACT(YEAR FROM l.posting_date) = 2025
+        GROUP BY 1
+    - user: "What was the cost of goods sold in the same quarters?"
+      gold_sql: |
+        SELECT EXTRACT(QUARTER FROM l.posting_date)::int AS quarter,
+               SUM(l.functional_debit_amount - l.functional_credit_amount) AS cogs
+        FROM fin_journal_lines l
+        WHERE l.is_posted AND l.account_id IN (SELECT cogs_account_id FROM inv_item_categories)
+          AND EXTRACT(YEAR FROM l.posting_date) = 2025
+        GROUP BY 1
+    - user: "So what was the gross profit for each of those quarters?"
+      gold_sql: |
+        SELECT EXTRACT(QUARTER FROM l.posting_date)::int AS quarter,
+               SUM(CASE WHEN a.account_type = 'REVENUE' THEN l.functional_credit_amount - l.functional_debit_amount ELSE 0 END)
+             - SUM(CASE WHEN a.id IN (SELECT cogs_account_id FROM inv_item_categories) THEN l.functional_debit_amount - l.functional_credit_amount ELSE 0 END) AS gross_profit
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND EXTRACT(YEAR FROM l.posting_date) = 2025 GROUP BY 1
+    - user: "And what is the gross margin percentage over the whole of 2025?"
+      gold_sql: |
+        SELECT ROUND(100.0 * (SUM(CASE WHEN a.account_type = 'REVENUE' THEN l.functional_credit_amount - l.functional_debit_amount ELSE 0 END)
+             - SUM(CASE WHEN a.id IN (SELECT cogs_account_id FROM inv_item_categories) THEN l.functional_debit_amount - l.functional_credit_amount ELSE 0 END))
+             / NULLIF(SUM(CASE WHEN a.account_type = 'REVENUE' THEN l.functional_credit_amount - l.functional_debit_amount ELSE 0 END), 0), 1) AS gross_margin_pct
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND EXTRACT(YEAR FROM l.posting_date) = 2025
+
+# ------------------------------------------------------------- three to four turns
+- id: fin_ap_followup_3
+  tenant: acme
+  split: dev
+  tags: [finance, multi_turn]
+  turns:
+    - user: "How much do we owe our vendors in total?"
+      gold_sql: |
+        SELECT COALESCE(SUM(open_amount), 0) AS open_payable FROM fin_vendor_bills
+        WHERE status IN ('POSTED','PARTIALLY_PAID') AND open_amount > 0
+    - user: "Show that by vendor."
+      gold_sql: |
+        SELECT v.name, SUM(b.open_amount) AS open_amount
+        FROM fin_vendor_bills b JOIN proc_vendors v ON v.id = b.partner_id
+        WHERE b.status IN ('POSTED','PARTIALLY_PAID') AND b.open_amount > 0 GROUP BY v.name
+    - user: "Which of those bills are due after today?"
+      gold_sql: |
+        SELECT b.bill_number, v.name, b.due_date, b.open_amount
+        FROM fin_vendor_bills b JOIN proc_vendors v ON v.id = b.partner_id
+        WHERE b.status IN ('POSTED','PARTIALLY_PAID') AND b.open_amount > 0 AND b.due_date > DATE '2026-07-06'
+
+- id: fin_revenue_period_4
+  tenant: acme
+  split: heldout
+  tags: [finance, multi_turn]
+  turns:
+    - user: "What was our revenue in May 2026?"
+      gold_sql: |
+        SELECT COALESCE(SUM(l.functional_credit_amount - l.functional_debit_amount), 0) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE'
+          AND l.posting_date >= DATE '2026-05-01' AND l.posting_date < DATE '2026-06-01'
+    - user: "How does that compare to the month before?"
+      gold_sql: |
+        SELECT to_char(date_trunc('month', l.posting_date), 'YYYY-MM') AS month,
+               SUM(l.functional_credit_amount - l.functional_debit_amount) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE'
+          AND l.posting_date >= DATE '2026-04-01' AND l.posting_date < DATE '2026-06-01'
+        GROUP BY 1
+    - user: "And June?"
+      gold_sql: |
+        SELECT COALESCE(SUM(l.functional_credit_amount - l.functional_debit_amount), 0) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE'
+          AND l.posting_date >= DATE '2026-06-01' AND l.posting_date < DATE '2026-07-01'
+    - user: "Which customer contributed the most in June?"
+      gold_sql: |
+        SELECT c.name, SUM(i.net_amount) AS revenue
+        FROM fin_customer_invoices i JOIN sales_customers c ON c.id = i.partner_id
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID','PAID')
+          AND i.invoice_date >= DATE '2026-06-01' AND i.invoice_date < DATE '2026-07-01'
+        GROUP BY c.name ORDER BY revenue DESC, c.name LIMIT 1
+
+# ------------------------------------------------------------------ single turn
+- id: fin_revenue_total
+  tenant: acme
+  split: dev
+  tags: [finance, single]
+  turns:
+    - user: "What is the total revenue recorded so far?"
+      gold_sql: |
+        SELECT COALESCE(SUM(l.functional_credit_amount - l.functional_debit_amount), 0) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE'
+
+- id: fin_revenue_by_month
+  tenant: acme
+  split: heldout
+  tags: [finance, single]
+  turns:
+    - user: "Show revenue by month."
+      gold_sql: |
+        SELECT date_trunc('month', l.posting_date)::date AS month,
+               SUM(l.functional_credit_amount - l.functional_debit_amount) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE' GROUP BY 1
+
+- id: fin_cash_position
+  tenant: acme
+  split: dev
+  tags: [finance, single]
+  turns:
+    - user: "What is our current cash position?"
+      gold_sql: |
+        SELECT COALESCE(SUM(l.functional_debit_amount - l.functional_credit_amount), 0) AS cash_position
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.is_cash_equivalent AND l.posting_date <= DATE '2026-07-06'
+
+- id: fin_ar_total
+  tenant: manufacturing
+  split: dev
+  tags: [finance, single]
+  turns:
+    - user: "What is the total outstanding accounts receivable?"
+      gold_sql: |
+        SELECT COALESCE(SUM(open_amount), 0) AS open_receivable FROM fin_customer_invoices
+        WHERE status IN ('POSTED','PARTIALLY_PAID') AND open_amount > 0
+
+- id: fin_overdue_list
+  tenant: acme
+  split: heldout
+  tags: [finance, single]
+  turns:
+    - user: "List all overdue customer invoices with the number of days overdue, most overdue first."
+      gold_sql: |
+        SELECT i.invoice_number, i.partner_name, i.due_date, DATE '2026-07-06' - i.due_date AS days_overdue, i.open_amount
+        FROM fin_customer_invoices i
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID') AND i.open_amount > 0 AND i.due_date < DATE '2026-07-06'
+        ORDER BY days_overdue DESC, i.invoice_number
+      compare: {order: false}
+
+- id: fin_top_customers_revenue
+  tenant: acme
+  split: dev
+  tags: [finance, single]
+  turns:
+    - user: "Who are our top 2 customers by revenue?"
+      gold_sql: |
+        SELECT c.name, SUM(i.net_amount) AS revenue
+        FROM fin_customer_invoices i JOIN sales_customers c ON c.id = i.partner_id
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID','PAID')
+        GROUP BY c.name ORDER BY revenue DESC, c.name LIMIT 2
+      compare: {order: true}
+
+- id: fin_trial_balance
+  tenant: acme
+  split: heldout
+  tags: [finance, single]
+  turns:
+    - user: "Show me the trial balance."
+      gold_sql: |
+        SELECT a.code, a.name, a.account_type, SUM(l.functional_debit_amount - l.functional_credit_amount) AS balance
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND l.posting_date <= DATE '2026-07-06'
+        GROUP BY a.code, a.name, a.account_type ORDER BY a.code
+
+- id: fin_gross_profit
+  tenant: retail
+  split: dev
+  tags: [finance, single]
+  turns:
+    - user: "What is our gross profit?"
+      gold_sql: |
+        SELECT COALESCE(SUM(CASE WHEN a.account_type = 'REVENUE' THEN l.functional_credit_amount - l.functional_debit_amount END), 0)
+             - COALESCE(SUM(CASE WHEN a.id IN (SELECT cogs_account_id FROM inv_item_categories) THEN l.functional_debit_amount - l.functional_credit_amount END), 0) AS gross_profit
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id WHERE l.is_posted
+
+- id: fin_bills_by_vendor
+  tenant: manufacturing
+  split: dev
+  tags: [finance, procurement, single]
+  turns:
+    - user: "What is the total amount billed by each vendor?"
+      gold_sql: |
+        SELECT v.name, SUM(b.gross_amount) AS billed
+        FROM fin_vendor_bills b JOIN proc_vendors v ON v.id = b.partner_id
+        WHERE b.status IN ('POSTED','PARTIALLY_PAID','PAID') GROUP BY v.name
+
+- id: fin_journal_doc_types
+  tenant: acme
+  split: heldout
+  tags: [finance, single]
+  turns:
+    - user: "How many posted journal entries do we have for each document type?"
+      gold_sql: |
+        SELECT document_type, COUNT(*) AS entries FROM fin_journal_entries
+        WHERE status = 'POSTED' GROUP BY document_type
+
+- id: fin_accounts_by_type
+  tenant: acme
+  split: dev
+  tags: [finance, single]
+  turns:
+    - user: "How many accounts do we have of each account type?"
+      gold_sql: |
+        SELECT account_type, COUNT(*) AS accounts FROM fin_accounts GROUP BY account_type
+
+- id: fin_ar_aging_buckets
+  tenant: manufacturing
+  split: dev
+  tags: [finance, single]
+  turns:
+    - user: "Give me the receivables aging by bucket."
+      gold_sql: |
+        SELECT CASE WHEN DATE '2026-07-06' - due_date <= 0 THEN 'Current'
+                    WHEN DATE '2026-07-06' - due_date <= 30 THEN '1-30'
+                    WHEN DATE '2026-07-06' - due_date <= 60 THEN '31-60'
+                    WHEN DATE '2026-07-06' - due_date <= 90 THEN '61-90'
+                    ELSE 'Over 90' END AS bucket, SUM(open_amount) AS open_amount
+        FROM fin_customer_invoices WHERE status IN ('POSTED','PARTIALLY_PAID') AND open_amount > 0 GROUP BY 1
+
+- id: fin_volume_revenue_2025
+  tenant: volume
+  split: heldout
+  tags: [finance, single, volume]
+  turns:
+    - user: "What was the total revenue in 2025?"
+      gold_sql: |
+        SELECT SUM(l.functional_credit_amount - l.functional_debit_amount) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE' AND l.posting_date >= DATE '2025-01-01' AND l.posting_date < DATE '2026-01-01'
+
+- id: fin_volume_last_quarter
+  tenant: volume
+  split: dev
+  tags: [finance, single, volume]
+  turns:
+    - user: "What was the revenue last quarter?"
+      gold_sql: |
+        SELECT SUM(l.functional_credit_amount - l.functional_debit_amount) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE' AND l.posting_date >= DATE '2026-01-01' AND l.posting_date < DATE '2026-04-01'
+
+- id: fin_volume_monthly_2026
+  tenant: volume
+  split: heldout
+  tags: [finance, single, volume]
+  turns:
+    - user: "Show monthly revenue for 2026 so far."
+      gold_sql: |
+        SELECT date_trunc('month', l.posting_date)::date AS month,
+               SUM(l.functional_credit_amount - l.functional_debit_amount) AS revenue
+        FROM fin_journal_lines l JOIN fin_accounts a ON a.id = l.account_id
+        WHERE l.is_posted AND a.account_type = 'REVENUE' AND l.posting_date >= DATE '2026-01-01' AND l.posting_date <= DATE '2026-07-06'
+        GROUP BY 1

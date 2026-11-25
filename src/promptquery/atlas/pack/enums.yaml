@@ -1,0 +1,725 @@
+crm_activities:
+  status:
+    enum: ActivityStatus
+    values:
+    - OPEN
+    - COMPLETED
+    - CANCELLED
+    doc: Lifecycle of an ACTIVITY (PLAN 12.1, D-057).
+  activity_type:
+    enum: ActivityType
+    values:
+    - CALL
+    - EMAIL
+    - MEETING
+    - TASK
+    - NOTE
+    doc: The kind of an ACTIVITY (PLAN 12.1, D-057) — a logged interaction. Informational typing only;
+      every type follows the same OPEN → COMPLETED/CANCELLED lifecycle.
+crm_leads:
+  status:
+    enum: LeadStatus
+    values:
+    - NEW
+    - CONTACTED
+    - QUALIFIED
+    - DISQUALIFIED
+    - CONVERTED
+    doc: Lifecycle of a LEAD (PLAN 12.1, D-057). The service owns every transition (CLAUDE.md rule 7).
+crm_opportunities:
+  stage:
+    enum: OpportunityStage
+    values:
+    - PROSPECTING
+    - QUALIFICATION
+    - PROPOSAL
+    - NEGOTIATION
+    - WON
+    - LOST
+    doc: 'The KANBAN COLUMNS of the opportunity pipeline (PLAN 12.1, D-057). The stage IS the column;
+      ``move_stage`` moves the card. The service owns the allowed transitions:'
+fin_accounts:
+  account_type:
+    enum: AccountType
+    values:
+    - ASSET
+    - LIABILITY
+    - EQUITY
+    - REVENUE
+    - EXPENSE
+    doc: The five statement-deriving account types (D-021) — all statements project from journal lines
+      grouped by the account's type.
+  normal_balance:
+    enum: NormalBalance
+    values:
+    - DEBIT
+    - CREDIT
+    doc: The side an account normally carries a positive balance on; derivable from account_type but stored
+      for query simplicity (D-021).
+  cash_flow_category:
+    enum: CashFlowCategory
+    values:
+    - OPERATING
+    - INVESTING
+    - FINANCING
+    doc: Cash-flow-statement bucket (D-021); nullable — only cash-flow accounts carry one.
+fin_allocation_rules:
+  basis:
+    enum: AllocationBasis
+    values:
+    - PERCENT
+    - FIXED_WEIGHT
+    doc: 'Allocation-rule target weights (PLAN 4.7): PERCENT must sum to 100; FIXED_WEIGHT are positive
+      proportional weights. Parts sum EXACTLY via ``core.money.allocate``.'
+fin_allocation_runs:
+  status:
+    enum: AllocationRunStatus
+    values:
+    - DRAFT
+    - POSTED
+    - REVERSED
+    doc: 'Allocation-run lifecycle (PLAN 4.7): POSTED (numbered redistribution entry with cost_center_id
+      per line), REVERSED, or DRAFT (transient).'
+fin_assets:
+  status:
+    enum: AssetStatus
+    values:
+    - DRAFT
+    - ACTIVE
+    - FULLY_DEPRECIATED
+    doc: 'Asset lifecycle (PLAN 4.10): DRAFT editable, no number; ACTIVE numbered at activation and selected
+      by depreciation runs; FULLY_DEPRECIATED once accumulated == cost - salvage. Disposal/transfer are
+      parity-doc laters — no dead enum values for them.'
+  depreciation_method:
+    enum: DepreciationMethod
+    values:
+    - STRAIGHT_LINE
+    - DECLINING_BALANCE
+    doc: 'How an asset''s periodic depreciation is computed (PLAN 4.10): STRAIGHT_LINE spreads (cost -
+      salvage) evenly over the useful life (final period absorbs rounding so the total is exact); DECLINING_BALANCE
+      takes NBV x annual rate / 12, floored at salvage.'
+fin_bank_statement_lines:
+  status:
+    enum: LineStatus
+    values:
+    - UNMATCHED
+    - SUGGESTED
+    - MATCHED
+    - CLEARED
+    doc: 'Statement-line machine (PLAN 4.9): UNMATCHED -> SUGGESTED -> MATCHED (confirm) or back (reject);
+      UNMATCHED -> CLEARED (posted clearing entry). Resolved = MATCHED | CLEARED.'
+fin_bank_statements:
+  status:
+    enum: StatementStatus
+    values:
+    - IMPORTED
+    - PARTIALLY_RECONCILED
+    - RECONCILED
+    doc: Bank-statement state (PLAN 4.9), derived from line resolution counts.
+fin_customer_invoices:
+  status:
+    enum: InvoiceStatus
+    values:
+    - DRAFT
+    - POSTED
+    - PARTIALLY_PAID
+    - PAID
+    - REVERSED
+    doc: 'Customer-invoice lifecycle (PLAN 4.6, AR — BillStatus mirror, sign flipped): DRAFT editable;
+      POSTED has number + journal + ``open_amount``; PARTIALLY_PAID/PAID track receipt clearing; REVERSED
+      = journal reversed. Open items key on opaque ``partner_id`` (D-029).'
+fin_customer_receipts:
+  status:
+    enum: ReceiptStatus
+    values:
+    - DRAFT
+    - POSTED
+    - REVERSED
+    doc: 'Customer-receipt lifecycle (PLAN 4.6, AR — PaymentStatus mirror): created+posted in one step
+      (DRAFT transient); POSTED has number + clearing journal; REVERSED = reversed.'
+fin_depreciation_runs:
+  status:
+    enum: DepreciationRunStatus
+    values:
+    - DRAFT
+    - POSTED
+    - REVERSED
+    doc: 'Depreciation-run lifecycle (PLAN 4.10, the allocation-run pattern): POSTED (numbered run with
+      one grouped journal entry), REVERSED once its entry is reversed, DRAFT transient.'
+fin_exchange_rates:
+  rate_type:
+    enum: RateKind
+    values:
+    - SPOT
+    - CLOSING
+    doc: 'Exchange-rate type (D-019): SPOT = posting-time translation; CLOSING = period-end revaluation.
+      get_rate filters on it so the two flows never share a rate.'
+fin_fiscal_periods:
+  status:
+    enum: PeriodStatus
+    values: &id001
+    - OPEN
+    - CLOSED
+    doc: Open/closed state of a fiscal year or period (D-018); CLOSED rejects postings dated within it
+      — at the service layer and the DB period-posting trigger.
+fin_fiscal_years:
+  status:
+    enum: PeriodStatus
+    values: *id001
+    doc: Open/closed state of a fiscal year or period (D-018); CLOSED rejects postings dated within it
+      — at the service layer and the DB period-posting trigger.
+fin_fx_revaluation_runs:
+  status:
+    enum: FxRunStatus
+    values:
+    - DRAFT
+    - COMPLETED
+    - REVERSED
+    doc: 'FX revaluation-run status (D-019): COMPLETED once FX_REVAL entries + auto-reversals posted;
+      re-running a period REVERSES the prior run (append-only) then posts a fresh COMPLETED one; DRAFT
+      is the transient pre-post state.'
+fin_journal_entries:
+  document_type:
+    enum: DocumentType
+    values:
+    - JOURNAL
+    - AP_INVOICE
+    - AR_INVOICE
+    - AR_CREDIT_NOTE
+    - PAYMENT
+    - COGS
+    - FX_REVAL
+    - DEPRECIATION
+    - PAYROLL
+    doc: 'Journal-entry document type (D-017): JOURNAL = manual entry; the others tag entries from specific
+      flows. A reversal preserves the original''s type (FX_REVAL stays FX_REVAL).'
+  status:
+    enum: EntryStatus
+    values:
+    - DRAFT
+    - POSTED
+    - REVERSED
+    doc: 'Journal-entry lifecycle (D-017): DRAFT editable; POSTED immutable (only -> REVERSED, with reversed_by
+      set); REVERSED = cancelled by a reversing entry. DB trigger matches.'
+fin_journal_lines:
+  partner_type:
+    enum: null
+    values:
+    - CUSTOMER
+    - VENDOR
+    doc: ''
+fin_vendor_bills:
+  status:
+    enum: BillStatus
+    values:
+    - DRAFT
+    - POSTED
+    - PARTIALLY_PAID
+    - PAID
+    - REVERSED
+    doc: 'Vendor-bill lifecycle (PLAN 4.5, AP): DRAFT editable, no number/journal; POSTED has number +
+      journal + ``open_amount``; PARTIALLY_PAID/PAID track clearing; REVERSED = journal reversed. Open
+      items key on an opaque ``partner_id`` (D-029).'
+fin_vendor_payments:
+  status:
+    enum: PaymentStatus
+    values:
+    - DRAFT
+    - POSTED
+    - REVERSED
+    doc: 'Vendor-payment lifecycle (PLAN 4.5, AP): created+posted in one step (DRAFT transient); POSTED
+      has number + clearing journal; REVERSED = journal reversed.'
+hr_employees:
+  status:
+    enum: EmploymentStatus
+    values:
+    - ACTIVE
+    - ON_LEAVE
+    - TERMINATED
+    doc: Lifecycle status of an EMPLOYEE (PLAN 10.1, D-052).
+  employment_type:
+    enum: EmploymentType
+    values:
+    - FULL_TIME
+    - PART_TIME
+    - CONTRACT
+    doc: The employment ARRANGEMENT of an employee (PLAN 10.1, D-052).
+hr_leave_requests:
+  status:
+    enum: LeaveRequestStatus
+    values:
+    - DRAFT
+    - SUBMITTED
+    - APPROVED
+    - REJECTED
+    - CANCELLED
+    doc: Lifecycle of a LEAVE REQUEST (PLAN 10.2, D-053). The procurement requisition submit→approve→reject
+      precedent (D-040), without a value-threshold rule — every request awaits a distinct ``hr.leave.approve``
+      holder.
+hr_leave_types:
+  accrual_frequency:
+    enum: AccrualFrequency
+    values:
+    - MONTHLY
+    - ANNUAL
+    doc: 'How a leave type ACCRUES (PLAN 10.2, D-053): the cadence the accrual run grants ``accrual_amount``
+      on.'
+  unit:
+    enum: LeaveUnit
+    values:
+    - DAYS
+    doc: The unit a leave type / request tracks in (PLAN 10.2, D-053). v1 tracks leave in **DAYS** only.
+      Half-day granularity is expressible WITHOUT a new unit — ``days`` is a ``QuantityType`` (NUMERIC
+      scale 6, D-015), so a caller supplies ``0.5`` for a half day; a dedicated HALF_DAY unit (and shift-aware
+      part-day math) is the documented later. The enum exists so the later unit set has a home and the
+      column reads self-documenting.
+hr_payroll_runs:
+  status:
+    enum: PayrollRunStatus
+    values:
+    - DRAFT
+    - POSTED
+    - CANCELLED
+    doc: 'Lifecycle of a PAYROLL RUN (PLAN 10.4, D-055). A run computes gross→net per employee in DRAFT,
+      then POSTS one consolidated finance journal through the event bus (the value-bearing transition).
+      The simplistic flat-tax model (see ``DEFAULT_PAYROLL_TAX_RATE_PERCENT``) is explicitly NOT jurisdiction-compliant
+      (s4hana-parity §HCM "Payroll": no brackets, no social security, no deductions beyond a single flat
+      withholding rate).'
+hr_timesheets:
+  status:
+    enum: TimesheetStatus
+    values:
+    - DRAFT
+    - SUBMITTED
+    - APPROVED
+    - REJECTED
+    doc: 'Lifecycle of a TIMESHEET (PLAN 10.3, D-054). A timesheet HEADER groups an employee''s time entries
+      over a period and is approved at the HEADER level (the SAP CATS / leave-request approval precedent,
+      D-053) — the clean SAP-like model: lines are editable only while the header is a DRAFT, and approval
+      routes the whole period at once.'
+hsp_menu_availability:
+  state:
+    enum: AvailabilityState
+    values:
+    - AVAILABLE
+    - LIMITED
+    - EIGHTY_SIXED
+    doc: What the guest read path says about a sellable menu item (spec Q2).
+  source:
+    enum: AvailabilitySource
+    values:
+    - MANUAL
+    - AUTO
+    doc: 'WHO last wrote the availability row — the audit substitute for a table that deliberately carries
+      no ``AuditMixin`` (see ``AvailabilityState``: 86-ing is shift-scoped churn, not a security-relevant
+      change worth a before/after row per flip).'
+hsp_order_tickets:
+  status:
+    enum: OrderTicketStatus
+    values:
+    - OPEN
+    - SENT_TO_KITCHEN
+    - IN_PREP
+    - READY
+    - SERVED
+    - SETTLED
+    - CANCELLED
+    doc: Lifecycle of an ORDER TICKET — the check for one table (PLAN 19 Task 4).
+hsp_table_reservations:
+  status:
+    enum: ReservationStatus
+    values:
+    - CONFIRMED
+    - SEATED
+    - COMPLETED
+    - NO_SHOW
+    - CANCELLED
+    doc: Lifecycle of a TABLE RESERVATION (Phase 21).
+inv_item_categories:
+  default_costing_method:
+    enum: CostingMethod
+    values: &id002
+    - MOVING_AVERAGE
+    - FIFO
+    doc: How a stocked item is valued (D-020). Defaulted onto the item FROM its category at create but
+      STORED on the item, because D-020 changes it only while no stock exists and the item is the costing
+      unit. The moving-average valuation table and FIFO cost layers arrive in PLAN 5.3; 5.1 only records
+      the method so receipts know which engine to use.
+inv_items:
+  tracking_mode:
+    enum: TrackingMode
+    values:
+    - NONE
+    - LOT
+    - SERIAL
+    doc: 'Whether a stocked item''s units are individually identified (parity: batch/serial mgmt).'
+  item_type:
+    enum: ItemType
+    values:
+    - STOCKED
+    - NON_STOCKED
+    - SERVICE
+    doc: What an item IS, which decides whether it carries stock (D-020).
+  costing_method:
+    enum: CostingMethod
+    values: *id002
+    doc: How a stocked item is valued (D-020). Defaulted onto the item FROM its category at create but
+      STORED on the item, because D-020 changes it only while no stock exists and the item is the costing
+      unit. The moving-average valuation table and FIFO cost layers arrive in PLAN 5.3; 5.1 only records
+      the method so receipts know which engine to use.
+inv_lots:
+  status:
+    enum: LotStatus
+    values:
+    - AVAILABLE
+    - BLOCKED
+    - CONSUMED
+    doc: 'Lifecycle of a lot/batch instance (parity: batch management). For 5.1 the table merely EXISTS
+      — lots are created during receipts (5.2+); AVAILABLE is the default a receipt sets, the others are
+      reached by later quality/expiry flows. No dead CRUD now (masters-only).'
+inv_serials:
+  status:
+    enum: SerialStatus
+    values:
+    - IN_STOCK
+    - ISSUED
+    - BLOCKED
+    doc: 'Lifecycle of a serial-number instance (parity: serial management). Like LotStatus, the table
+      exists for 5.1 and is populated at receipt (5.2+): IN_STOCK on receipt, ISSUED when the unit leaves,
+      BLOCKED by quality holds.'
+inv_stock_counts:
+  status:
+    enum: CountStatus
+    values:
+    - DRAFT
+    - COUNTING
+    - POSTED
+    - CANCELLED
+    doc: 'Lifecycle of a stock count (PLAN 5.4):'
+  count_type:
+    enum: CountType
+    values:
+    - PHYSICAL
+    - CYCLE
+    doc: 'What a stock count covers (parity: physical inventory vs cycle counting).'
+inv_stock_moves:
+  move_type:
+    enum: MoveType
+    values:
+    - RECEIPT
+    - ISSUE
+    - TRANSFER
+    - ADJUSTMENT
+    doc: 'The kind of stock movement (PLAN 5.2). The move''s QUANTITY is always positive; the TYPE decides
+      which of from_bin/to_bin participate (the direction), so a single signed-quantity column is never
+      needed (the journal one-side-CHECK philosophy applied to stock):'
+mfg_boms:
+  status:
+    enum: BomStatus
+    values:
+    - DRAFT
+    - ACTIVE
+    - INACTIVE
+    doc: Lifecycle of a BOM VERSION (D-047). A BOM is activated to become usable by production/MRP.
+mfg_mrp_runs:
+  status:
+    enum: MrpRunStatus
+    values:
+    - RUNNING
+    - COMPLETED
+    - FAILED
+    doc: Lifecycle of an MRP RUN (PLAN 8.3, D-049) — distinct from the generic ``JobStatus`` because the
+      run is a domain document with its own number, even when executed as a background job.
+mfg_planned_orders:
+  status:
+    enum: PlannedOrderStatus
+    values:
+    - PLANNED
+    - FIRMED
+    - CONVERTED
+    - CANCELLED
+    doc: Lifecycle of a PLANNED ORDER (PLAN 8.3, D-049). The MRP run produces PLANNED proposals; a planner
+      FIRMS the ones to keep, CONVERTS them into real orders, or CANCELS them.
+  order_type:
+    enum: PlannedOrderType
+    values:
+    - MAKE
+    - BUY
+    doc: 'How a PLANNED ORDER''s net requirement is sourced (PLAN 8.3, D-049). The MAKE-vs-BUY rule is
+      structural: an item is MAKE if it has an ACTIVE default BOM (it is produced in-house, and the run
+      EXPLODES its BOM into dependent component demand), else BUY (it is procured — a leaf the explosion
+      stops at).'
+mfg_production_orders:
+  status:
+    enum: ProductionOrderStatus
+    values:
+    - DRAFT
+    - RELEASED
+    - IN_PROGRESS
+    - FINISHED
+    - CANCELLED
+    doc: Lifecycle of a PRODUCTION ORDER (PLAN 8.2, D-048). A production order turns components into a
+      finished parent item; its status tracks the issue→finish progress.
+mfg_routings:
+  status:
+    enum: RoutingStatus
+    values:
+    - DRAFT
+    - ACTIVE
+    - INACTIVE
+    doc: 'Lifecycle of a ROUTING VERSION (D-047) — the routing twin of ``BomStatus``, identical semantics
+      so BOM and routing activation read the same:'
+pm_equipment:
+  status:
+    enum: EquipmentStatus
+    values:
+    - ACTIVE
+    - INACTIVE
+    - RETIRED
+    doc: Lifecycle of a piece of EQUIPMENT (PLAN 9.2, D-051). A flat equipment register — no functional
+      location hierarchy (out of v1 scope).
+pm_maintenance_orders:
+  order_type:
+    enum: MaintenanceOrderType
+    values:
+    - CORRECTIVE
+    - PREVENTIVE
+    doc: How a MAINTENANCE ORDER originated (PLAN 9.2, D-051).
+  status:
+    enum: MaintenanceOrderStatus
+    values:
+    - DRAFT
+    - SCHEDULED
+    - IN_PROGRESS
+    - COMPLETED
+    - CANCELLED
+    doc: Lifecycle of a MAINTENANCE ORDER (PLAN 9.2, D-051). The service owns every transition (CLAUDE.md
+      rule 7).
+pm_maintenance_plans:
+  status:
+    enum: MaintenancePlanStatus
+    values:
+    - ACTIVE
+    - INACTIVE
+    doc: Lifecycle of a MAINTENANCE PLAN (PLAN 9.2, D-051). A plan defines a recurring preventive task
+      on a piece of equipment; the generation run creates orders from ACTIVE plans.
+  interval_unit:
+    enum: IntervalUnit
+    values:
+    - DAYS
+    - WEEKS
+    - MONTHS
+    doc: The UNIT of a maintenance plan's preventive interval (PLAN 9.2, D-051). ``interval_value`` ×
+      this unit is the recurrence (e.g. every 3 MONTHS). v1 is purely TIME-based — counter/performance
+      intervals need measurement points, which are out of scope.
+proc_approval_rules:
+  document_type:
+    enum: ApprovalDocumentType
+    values:
+    - REQUISITION
+    - PURCHASE_ORDER
+    doc: 'Which document kind an approval rule governs (PLAN 6.2). One active rule per (tenant, document_type):
+      the REQUISITION rule gates submit; the PURCHASE_ORDER rule gates send.'
+proc_goods_receipts:
+  status:
+    enum: GoodsReceiptStatus
+    values:
+    - DRAFT
+    - POSTED
+    - CANCELLED
+    doc: Lifecycle of a goods receipt — the document recording physical receipt of PO goods (6.3).
+proc_invoice_matches:
+  status:
+    enum: MatchStatus
+    values:
+    - DRAFT
+    - MATCHED
+    - EXCEPTION
+    - POSTED
+    - CANCELLED
+    doc: Lifecycle of a 3-way invoice match — the procure-to-pay closing document (PLAN 6.4, D-042).
+proc_purchase_orders:
+  status:
+    enum: PurchaseOrderStatus
+    values:
+    - DRAFT
+    - PENDING_APPROVAL
+    - APPROVED
+    - REJECTED
+    - SENT
+    - PARTIALLY_RECEIVED
+    - RECEIVED
+    - CLOSED
+    - CANCELLED
+    doc: Lifecycle of a purchase order — the committing P2P document.
+proc_requisitions:
+  status:
+    enum: RequisitionStatus
+    values:
+    - DRAFT
+    - SUBMITTED
+    - APPROVED
+    - REJECTED
+    - CONVERTED
+    - CANCELLED
+    doc: Lifecycle of a purchase requisition — the internal "we need to buy this" request.
+proc_rfqs:
+  status:
+    enum: RfqStatus
+    values:
+    - DRAFT
+    - SENT
+    - QUOTED
+    - CLOSED
+    - CANCELLED
+    doc: Lifecycle of a request-for-quotation. In v1 an RFQ targets ONE vendor (the vendor being asked
+      to quote); multi-bidder comparison is the documented parity later.
+proc_vendors:
+  status:
+    enum: VendorStatus
+    values:
+    - ACTIVE
+    - BLOCKED
+    - INACTIVE
+    doc: 'A vendor''s lifecycle / usability state (parity: vendor master block levels).'
+ps_projects:
+  status:
+    enum: ProjectStatus
+    values:
+    - PLANNING
+    - ACTIVE
+    - CLOSED
+    - CANCELLED
+    doc: Lifecycle of a PROJECT (PLAN 11.1, D-056). The service owns every transition (CLAUDE.md rule
+      7); v1 keeps the lifecycle informational — it does NOT gate posting (finance/HR tag a WBS id opaquely
+      and never consult project status, D-029).
+ps_wbs_elements:
+  status:
+    enum: WbsStatus
+    values:
+    - OPEN
+    - CLOSED
+    doc: 'Lifecycle of a WBS ELEMENT (PLAN 11.1, D-056). v1 keeps this SIMPLE: a WBS element is OPEN or
+      CLOSED, an informational flag on the masters.'
+qm_inspection_lots:
+  status:
+    enum: InspectionLotStatus
+    values:
+    - OPEN
+    - ACCEPTED
+    - REJECTED
+    - CANCELLED
+    doc: Lifecycle of an INSPECTION LOT (PLAN 9.1, D-050). A lot is created OPEN when a goods receipt
+      with ``requires_inspection`` posts; a usage DECISION accepts/rejects it.
+  source:
+    enum: InspectionSource
+    values:
+    - GOODS_RECEIPT
+    doc: Where an inspection lot ORIGINATED (PLAN 9.1, D-050). The enum is declared with room for the
+      parity-doc's later lot origins (production / delivery / manual), but v1 creates lots from exactly
+      ONE source — a goods receipt's inspection flag.
+  disposition:
+    enum: RejectDisposition
+    values:
+    - SCRAP
+    - BLOCK
+    - RETURN_TO_VENDOR
+    doc: What happens to REJECTED stock on a usage decision (PLAN 9.1, D-050). v1 implements SCRAP and
+      BLOCK; RETURN_TO_VENDOR is declared for the catalog but NOT implemented (it needs a vendor-return
+      chain — parity-doc "later"; selecting it is rejected 422).
+sales_billing_lines:
+  discount_type:
+    enum: DiscountType
+    values: &id003
+    - PERCENT
+    - AMOUNT
+    doc: How a per-order-LINE discount is expressed (PLAN 7.2 applies it; defined here so the wire contract
+      is stable from the start, the MatchStatus-declared-early precedent).
+sales_billings:
+  status:
+    enum: BillingStatus
+    values:
+    - DRAFT
+    - POSTED
+    - CANCELLED
+    doc: Lifecycle of a sales billing document — the O2C invoicing document (PLAN 7.4).
+sales_customers:
+  status:
+    enum: CustomerStatus
+    values:
+    - ACTIVE
+    - BLOCKED
+    - INACTIVE
+    doc: 'A customer''s lifecycle / usability state (parity: customer master block levels).'
+sales_deliveries:
+  status:
+    enum: DeliveryStatus
+    values:
+    - DRAFT
+    - POSTED
+    - CANCELLED
+    doc: Lifecycle of an outbound delivery — the O2C fulfilment document (PLAN 7.3), the outbound twin
+      of the procurement goods receipt (the GoodsReceiptStatus precedent, mirrored).
+sales_order_lines:
+  discount_type:
+    enum: DiscountType
+    values: *id003
+    doc: How a per-order-LINE discount is expressed (PLAN 7.2 applies it; defined here so the wire contract
+      is stable from the start, the MatchStatus-declared-early precedent).
+sales_orders:
+  status:
+    enum: SalesOrderStatus
+    values:
+    - DRAFT
+    - CONFIRMED
+    - CREDIT_BLOCKED
+    - PARTIALLY_DELIVERED
+    - DELIVERED
+    - INVOICED
+    - CLOSED
+    - CANCELLED
+    doc: Lifecycle of a sales order — the committing O2C document (PLAN 7.2). CONFIRMED is the key gate
+      this phase implements; the later O2C phases drive the fulfilment/billing states.
+  credit_check_status:
+    enum: CreditCheckStatus
+    values:
+    - PASSED
+    - BLOCKED
+    - RELEASED
+    doc: The result of an order's confirm-time credit check (PLAN 7.2, D-044), stored on the order so
+      the UI + audit can see why a confirmation blocked and that it was released.
+sales_price_lists:
+  status:
+    enum: PriceListStatus
+    values:
+    - ACTIVE
+    - INACTIVE
+    doc: A price list's usability state. Only ACTIVE lists are considered by the price resolver; an INACTIVE
+      list is retained (history, a seasonal list parked between campaigns) but never priced from. Transitions
+      are unrestricted between the two (a list can be re-activated).
+sales_quote_lines:
+  discount_type:
+    enum: DiscountType
+    values: *id003
+    doc: How a per-order-LINE discount is expressed (PLAN 7.2 applies it; defined here so the wire contract
+      is stable from the start, the MatchStatus-declared-early precedent).
+sales_quotes:
+  status:
+    enum: QuoteStatus
+    values:
+    - DRAFT
+    - SENT
+    - ACCEPTED
+    - REJECTED
+    - EXPIRED
+    - CONVERTED
+    - CANCELLED
+    doc: Lifecycle of a sales quotation — the pre-sales document (PLAN 7.2).
+sales_returns:
+  status:
+    enum: ReturnStatus
+    values:
+    - DRAFT
+    - POSTED
+    - CANCELLED
+    doc: Lifecycle of a sales return / RMA — the reverse-O2C document (PLAN 7.4).

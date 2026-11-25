@@ -38,7 +38,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,openai]"
+          pip install -e ".[dev,openai,api]"
       - name: Run pytest
         run: pytest -v
 
@@ -62,3 +62,68 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  # Live tests against a real, seeded Atlas ERP database: role/RLS boundary, tenant isolation,
+  # schema-pack drift, every metric / example / scenario query, full-stack conversations, and the
+  # evaluation harness self-check (gold SQL as the model, expects 100%).
+  # Atlas is cloned from its default branch, so this also flags upstream schema drift. It is
+  # non-blocking (continue-on-error) because Atlas can change independently of this repo.
+  atlas-live:
+    name: atlas live tests
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: atlas
+          POSTGRES_PASSWORD: atlas
+          POSTGRES_DB: atlas
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U atlas -d atlas" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      OWNER_DSN: postgresql://atlas:atlas@localhost:5432/atlas
+      BOT_DSN: postgresql://atlas_bot:botpw@localhost:5432/atlas
+      ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:atlas@localhost:5432/atlas
+      ATLAS_ENV: dev
+      ATLAS_JWT_SECRET: ci-only-secret-0123456789abcdef0123456789
+      ATLAS_API: http://127.0.0.1:8001/api/v1
+      ATLAS_SEED_DEMO: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: Taha-Mahmoodi/atlas-erp
+          path: atlas-erp
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - name: Migrate and seed Atlas
+        working-directory: atlas-erp/backend
+        run: |
+          uv sync
+          uv run alembic upgrade head
+          nohup uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 > /tmp/atlas-api.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8001/api/v1/health && break; sleep 1; done
+          uv run python seed.py
+          uv run python seed.py --volume
+      - name: Install the report bot
+        run: pip install -e ".[dev,api]"
+      - name: Provision the restricted bot role
+        run: |
+          python -m promptquery.atlas.security "$OWNER_DSN" > sql/atlas_bot_role.sql
+          psql "$OWNER_DSN" -v ON_ERROR_STOP=1 -v bot_password=botpw -q -f sql/atlas_bot_role.sql
+      - name: Live tests
+        env:
+          PQ_TEST_OWNER_DSN: ${{ env.OWNER_DSN }}
+          PQ_TEST_BOT_DSN: ${{ env.BOT_DSN }}
+        run: pytest -v
+      - name: Evaluation harness self-check (oracle)
+        env:
+          PQ_DSN: ${{ env.BOT_DSN }}
+          PQ_ADMIN_DSN: ${{ env.OWNER_DSN }}
+          PQ_TENANT: acme
+        run: python -m eval.atlas.run --split all --mode both --oracle --fail-under 1.0

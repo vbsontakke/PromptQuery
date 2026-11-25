@@ -1,0 +1,313 @@
+# Additional six-turn conversations. As-of date: 2026-07-06.
+
+- id: fin_ap_chain_6
+  tenant: manufacturing
+  split: heldout
+  tags: [finance, procurement, multi_turn, six_turn]
+  turns:
+    - user: "Show open payables by vendor."
+      gold_sql: |
+        SELECT v.name, SUM(b.open_amount) AS open_amount
+        FROM fin_vendor_bills b JOIN proc_vendors v ON v.id = b.partner_id
+        WHERE b.status IN ('POSTED','PARTIALLY_PAID') AND b.open_amount > 0 GROUP BY v.name
+    - user: "Which vendor do we owe the most?"
+      gold_sql: |
+        SELECT v.name, SUM(b.open_amount) AS open_amount
+        FROM fin_vendor_bills b JOIN proc_vendors v ON v.id = b.partner_id
+        WHERE b.status IN ('POSTED','PARTIALLY_PAID') AND b.open_amount > 0
+        GROUP BY v.name ORDER BY open_amount DESC, v.name LIMIT 1
+    - user: "List the unpaid bills from that vendor."
+      gold_sql: |
+        SELECT b.bill_number, b.bill_date, b.due_date, b.open_amount
+        FROM fin_vendor_bills b JOIN proc_vendors v ON v.id = b.partner_id
+        WHERE b.status IN ('POSTED','PARTIALLY_PAID') AND b.open_amount > 0
+          AND v.name = (SELECT v2.name FROM fin_vendor_bills b2 JOIN proc_vendors v2 ON v2.id = b2.partner_id
+                        WHERE b2.status IN ('POSTED','PARTIALLY_PAID') AND b2.open_amount > 0
+                        GROUP BY v2.name ORDER BY SUM(b2.open_amount) DESC, v2.name LIMIT 1)
+    - user: "Which of those bills is the oldest?"
+      gold_sql: |
+        SELECT b.bill_number, b.bill_date, b.due_date, b.open_amount
+        FROM fin_vendor_bills b JOIN proc_vendors v ON v.id = b.partner_id
+        WHERE b.status IN ('POSTED','PARTIALLY_PAID') AND b.open_amount > 0
+          AND v.name = (SELECT v2.name FROM fin_vendor_bills b2 JOIN proc_vendors v2 ON v2.id = b2.partner_id
+                        WHERE b2.status IN ('POSTED','PARTIALLY_PAID') AND b2.open_amount > 0
+                        GROUP BY v2.name ORDER BY SUM(b2.open_amount) DESC, v2.name LIMIT 1)
+        ORDER BY b.bill_date, b.bill_number LIMIT 1
+    - user: "What is the due date of that bill?"
+      gold_sql: |
+        SELECT b.due_date
+        FROM fin_vendor_bills b JOIN proc_vendors v ON v.id = b.partner_id
+        WHERE b.status IN ('POSTED','PARTIALLY_PAID') AND b.open_amount > 0
+          AND v.name = (SELECT v2.name FROM fin_vendor_bills b2 JOIN proc_vendors v2 ON v2.id = b2.partner_id
+                        WHERE b2.status IN ('POSTED','PARTIALLY_PAID') AND b2.open_amount > 0
+                        GROUP BY v2.name ORDER BY SUM(b2.open_amount) DESC, v2.name LIMIT 1)
+        ORDER BY b.bill_date, b.bill_number LIMIT 1
+    - user: "How many days is that from today?"
+      gold_sql: |
+        SELECT DATE '2026-07-06' - b.due_date AS days_past_due
+        FROM fin_vendor_bills b JOIN proc_vendors v ON v.id = b.partner_id
+        WHERE b.status IN ('POSTED','PARTIALLY_PAID') AND b.open_amount > 0
+          AND v.name = (SELECT v2.name FROM fin_vendor_bills b2 JOIN proc_vendors v2 ON v2.id = b2.partner_id
+                        WHERE b2.status IN ('POSTED','PARTIALLY_PAID') AND b2.open_amount > 0
+                        GROUP BY v2.name ORDER BY SUM(b2.open_amount) DESC, v2.name LIMIT 1)
+        ORDER BY b.bill_date, b.bill_number LIMIT 1
+
+- id: inv_widget_chain_6
+  tenant: acme
+  split: dev
+  tags: [inventory, sales, multi_turn, six_turn]
+  turns:
+    - user: "What stocked items do we have?"
+      gold_sql: |
+        SELECT item_code, name FROM inv_items WHERE item_type = 'STOCKED'
+    - user: "How much of each is on hand?"
+      gold_sql: |
+        SELECT i.item_code, SUM(q.on_hand_qty) AS on_hand
+        FROM inv_items i JOIN inv_stock_quants q ON q.item_id = i.id WHERE i.item_type = 'STOCKED' GROUP BY i.item_code
+    - user: "Which one is lowest?"
+      gold_sql: |
+        SELECT i.item_code, SUM(q.on_hand_qty) AS on_hand
+        FROM inv_items i JOIN inv_stock_quants q ON q.item_id = i.id WHERE i.item_type = 'STOCKED'
+        GROUP BY i.item_code ORDER BY on_hand, i.item_code LIMIT 1
+    - user: "What is that stock worth?"
+      gold_sql: |
+        SELECT v.total_value FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id
+        WHERE i.item_code = (SELECT i2.item_code FROM inv_items i2 JOIN inv_stock_quants q2 ON q2.item_id = i2.id
+                             WHERE i2.item_type = 'STOCKED' GROUP BY i2.item_code ORDER BY SUM(q2.on_hand_qty), i2.item_code LIMIT 1)
+    - user: "How many units of it have customers ordered?"
+      gold_sql: |
+        SELECT SUM(l.ordered_quantity) AS ordered
+        FROM sales_order_lines l JOIN sales_orders o ON o.id = l.order_id JOIN inv_items i ON i.id = l.item_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED')
+          AND i.item_code = (SELECT i2.item_code FROM inv_items i2 JOIN inv_stock_quants q2 ON q2.item_id = i2.id
+                             WHERE i2.item_type = 'STOCKED' GROUP BY i2.item_code ORDER BY SUM(q2.on_hand_qty), i2.item_code LIMIT 1)
+    - user: "And how many units of it are still open to deliver?"
+      gold_sql: |
+        SELECT SUM(l.ordered_quantity - l.delivered_quantity) AS open_to_deliver
+        FROM sales_order_lines l JOIN sales_orders o ON o.id = l.order_id JOIN inv_items i ON i.id = l.item_id
+        WHERE o.status IN ('CONFIRMED','PARTIALLY_DELIVERED')
+          AND i.item_code = (SELECT i2.item_code FROM inv_items i2 JOIN inv_stock_quants q2 ON q2.item_id = i2.id
+                             WHERE i2.item_type = 'STOCKED' GROUP BY i2.item_code ORDER BY SUM(q2.on_hand_qty), i2.item_code LIMIT 1)
+
+- id: ps_project_chain_6
+  tenant: acme
+  split: heldout
+  tags: [projects, hr, multi_turn, six_turn]
+  turns:
+    - user: "List our active projects with their budgets."
+      gold_sql: |
+        SELECT code, name, budget_amount FROM ps_projects WHERE status = 'ACTIVE'
+    - user: "Which project has the largest budget?"
+      gold_sql: |
+        SELECT code, name, budget_amount FROM ps_projects WHERE status = 'ACTIVE' ORDER BY budget_amount DESC, code LIMIT 1
+    - user: "Show the work breakdown elements of that project."
+      gold_sql: |
+        SELECT w.code, w.name, w.budget_amount
+        FROM ps_wbs_elements w JOIN ps_projects p ON p.id = w.project_id
+        WHERE p.id = (SELECT id FROM ps_projects WHERE status = 'ACTIVE' ORDER BY budget_amount DESC, code LIMIT 1)
+    - user: "What is their combined budget?"
+      gold_sql: |
+        SELECT SUM(w.budget_amount) AS wbs_budget
+        FROM ps_wbs_elements w
+        WHERE w.project_id = (SELECT id FROM ps_projects WHERE status = 'ACTIVE' ORDER BY budget_amount DESC, code LIMIT 1)
+    - user: "How many hours have been logged on that project?"
+      gold_sql: |
+        SELECT SUM(te.hours) AS hours FROM hr_time_entries te
+        WHERE te.project_id = (SELECT id FROM ps_projects WHERE status = 'ACTIVE' ORDER BY budget_amount DESC, code LIMIT 1)
+    - user: "Which employees logged those hours?"
+      gold_sql: |
+        SELECT e.first_name, e.last_name, SUM(te.hours) AS hours
+        FROM hr_time_entries te JOIN hr_timesheets ts ON ts.id = te.timesheet_id JOIN hr_employees e ON e.id = ts.employee_id
+        WHERE te.project_id = (SELECT id FROM ps_projects WHERE status = 'ACTIVE' ORDER BY budget_amount DESC, code LIMIT 1)
+        GROUP BY e.id, e.first_name, e.last_name
+
+- id: vol_stock_flow_6
+  tenant: volume
+  split: dev
+  tags: [inventory, multi_turn, six_turn, volume]
+  turns:
+    - user: "How many stock movements were there in 2025?"
+      gold_sql: |
+        SELECT COUNT(*) AS movements FROM inv_stock_moves WHERE move_date >= DATE '2025-01-01' AND move_date < DATE '2026-01-01'
+    - user: "Split that by movement type."
+      gold_sql: |
+        SELECT move_type, COUNT(*) AS movements FROM inv_stock_moves
+        WHERE move_date >= DATE '2025-01-01' AND move_date < DATE '2026-01-01' GROUP BY move_type
+    - user: "Which type moved more units?"
+      gold_sql: |
+        SELECT move_type, SUM(quantity) AS units FROM inv_stock_moves
+        WHERE move_date >= DATE '2025-01-01' AND move_date < DATE '2026-01-01' GROUP BY move_type ORDER BY units DESC LIMIT 1
+    - user: "Show that type's movements by quarter."
+      gold_sql: |
+        SELECT EXTRACT(QUARTER FROM move_date)::int AS quarter, COUNT(*) AS movements FROM inv_stock_moves
+        WHERE move_date >= DATE '2025-01-01' AND move_date < DATE '2026-01-01' AND move_type = 'RECEIPT' GROUP BY 1
+    - user: "Which quarter was the busiest?"
+      gold_sql: |
+        SELECT EXTRACT(QUARTER FROM move_date)::int AS quarter, COUNT(*) AS movements FROM inv_stock_moves
+        WHERE move_date >= DATE '2025-01-01' AND move_date < DATE '2026-01-01' AND move_type = 'RECEIPT'
+        GROUP BY 1 ORDER BY movements DESC, quarter LIMIT 1
+    - user: "What total quantity was moved in that quarter?"
+      gold_sql: |
+        SELECT SUM(quantity) AS units FROM inv_stock_moves
+        WHERE move_date >= DATE '2025-01-01' AND move_date < DATE '2026-01-01' AND move_type = 'RECEIPT'
+          AND EXTRACT(QUARTER FROM move_date) = (
+            SELECT EXTRACT(QUARTER FROM move_date)::int FROM inv_stock_moves
+            WHERE move_date >= DATE '2025-01-01' AND move_date < DATE '2026-01-01' AND move_type = 'RECEIPT'
+            GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)
+
+- id: vol_item_buyers_6
+  tenant: volume
+  split: heldout
+  tags: [sales, inventory, multi_turn, six_turn, volume]
+  turns:
+    - user: "Which 3 items have been ordered in the largest quantities?"
+      gold_sql: |
+        SELECT i.item_code, SUM(l.ordered_quantity) AS quantity
+        FROM sales_order_lines l JOIN sales_orders o ON o.id = l.order_id JOIN inv_items i ON i.id = l.item_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED') GROUP BY i.item_code ORDER BY quantity DESC, i.item_code LIMIT 3
+    - user: "How many orders contain the top one?"
+      gold_sql: |
+        SELECT COUNT(DISTINCT l.order_id) AS orders
+        FROM sales_order_lines l JOIN sales_orders o ON o.id = l.order_id JOIN inv_items i ON i.id = l.item_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED') AND i.item_code = 'VITM-01720'
+    - user: "Which customers bought it?"
+      gold_sql: |
+        SELECT c.name, SUM(l.ordered_quantity) AS quantity
+        FROM sales_order_lines l JOIN sales_orders o ON o.id = l.order_id JOIN inv_items i ON i.id = l.item_id JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED') AND i.item_code = 'VITM-01720' GROUP BY c.name
+    - user: "Who are the two biggest buyers of it?"
+      gold_sql: |
+        SELECT c.name, SUM(l.ordered_quantity) AS quantity
+        FROM sales_order_lines l JOIN sales_orders o ON o.id = l.order_id JOIN inv_items i ON i.id = l.item_id JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED') AND i.item_code = 'VITM-01720'
+        GROUP BY c.name ORDER BY quantity DESC, c.name LIMIT 2
+    - user: "What is the combined order value of those two customers across all items?"
+      gold_sql: |
+        SELECT SUM(o.total_amount) AS order_value FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED')
+          AND c.name IN (SELECT c2.name FROM sales_order_lines l2 JOIN sales_orders o2 ON o2.id = l2.order_id JOIN inv_items i2 ON i2.id = l2.item_id JOIN sales_customers c2 ON c2.id = o2.customer_id
+                         WHERE o2.status NOT IN ('DRAFT','CANCELLED') AND i2.item_code = 'VITM-01720'
+                         GROUP BY c2.name ORDER BY SUM(l2.ordered_quantity) DESC, c2.name LIMIT 2)
+    - user: "What percentage of our overall order value is that?"
+      gold_sql: |
+        SELECT ROUND(100.0 * SUM(o.total_amount) FILTER (WHERE c.name IN (SELECT c2.name FROM sales_order_lines l2 JOIN sales_orders o2 ON o2.id = l2.order_id JOIN inv_items i2 ON i2.id = l2.item_id JOIN sales_customers c2 ON c2.id = o2.customer_id
+                         WHERE o2.status NOT IN ('DRAFT','CANCELLED') AND i2.item_code = 'VITM-01720'
+                         GROUP BY c2.name ORDER BY SUM(l2.ordered_quantity) DESC, c2.name LIMIT 2)) / SUM(o.total_amount), 2) AS pct
+        FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id WHERE o.status NOT IN ('DRAFT','CANCELLED')
+
+- id: proc_item_chain_6
+  tenant: manufacturing
+  split: dev
+  tags: [procurement, multi_turn, six_turn]
+  turns:
+    - user: "How many purchase orders does each vendor have?"
+      gold_sql: |
+        SELECT v.name, COUNT(*) AS purchase_orders
+        FROM proc_purchase_orders p JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY v.name
+    - user: "Which vendor has the most?"
+      gold_sql: |
+        SELECT v.name, COUNT(*) AS purchase_orders
+        FROM proc_purchase_orders p JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY v.name ORDER BY purchase_orders DESC, v.name LIMIT 1
+    - user: "Which items do we buy from them?"
+      gold_sql: |
+        SELECT DISTINCT i.item_code, i.name
+        FROM proc_purchase_order_lines l JOIN proc_purchase_orders p ON p.id = l.po_id JOIN inv_items i ON i.id = l.item_id JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+          AND v.name = (SELECT v2.name FROM proc_purchase_orders p2 JOIN proc_vendors v2 ON v2.id = p2.vendor_id
+                        WHERE p2.status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY v2.name ORDER BY COUNT(*) DESC, v2.name LIMIT 1)
+    - user: "What total quantity have we ordered of each of those items?"
+      gold_sql: |
+        SELECT i.item_code, SUM(l.quantity) AS ordered_quantity
+        FROM proc_purchase_order_lines l JOIN proc_purchase_orders p ON p.id = l.po_id JOIN inv_items i ON i.id = l.item_id JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+          AND v.name = (SELECT v2.name FROM proc_purchase_orders p2 JOIN proc_vendors v2 ON v2.id = p2.vendor_id
+                        WHERE p2.status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY v2.name ORDER BY COUNT(*) DESC, v2.name LIMIT 1)
+        GROUP BY i.item_code
+    - user: "What is the highest unit cost we paid for each of them?"
+      gold_sql: |
+        SELECT i.item_code, MAX(l.unit_cost) AS max_unit_cost
+        FROM proc_purchase_order_lines l JOIN proc_purchase_orders p ON p.id = l.po_id JOIN inv_items i ON i.id = l.item_id JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+          AND v.name = (SELECT v2.name FROM proc_purchase_orders p2 JOIN proc_vendors v2 ON v2.id = p2.vendor_id
+                        WHERE p2.status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY v2.name ORDER BY COUNT(*) DESC, v2.name LIMIT 1)
+        GROUP BY i.item_code
+    - user: "Which of that vendor's purchase orders are closed?"
+      gold_sql: |
+        SELECT p.po_number, p.order_date, p.total_amount
+        FROM proc_purchase_orders p JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status = 'CLOSED'
+          AND v.name = (SELECT v2.name FROM proc_purchase_orders p2 JOIN proc_vendors v2 ON v2.id = p2.vendor_id
+                        WHERE p2.status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY v2.name ORDER BY COUNT(*) DESC, v2.name LIMIT 1)
+
+- id: sales_customer_chain_6
+  tenant: manufacturing
+  split: heldout
+  tags: [sales, finance, multi_turn, six_turn]
+  turns:
+    - user: "What is the revenue per customer?"
+      gold_sql: |
+        SELECT c.name, SUM(i.net_amount) AS revenue
+        FROM fin_customer_invoices i JOIN sales_customers c ON c.id = i.partner_id
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID','PAID') GROUP BY c.name
+    - user: "Who is our biggest customer?"
+      gold_sql: |
+        SELECT c.name, SUM(i.net_amount) AS revenue
+        FROM fin_customer_invoices i JOIN sales_customers c ON c.id = i.partner_id
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID','PAID') GROUP BY c.name ORDER BY revenue DESC, c.name LIMIT 1
+    - user: "How many sales orders have they placed?"
+      gold_sql: |
+        SELECT COUNT(*) AS orders FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED')
+          AND c.name = (SELECT c2.name FROM fin_customer_invoices i2 JOIN sales_customers c2 ON c2.id = i2.partner_id
+                        WHERE i2.status IN ('POSTED','PARTIALLY_PAID','PAID') GROUP BY c2.name ORDER BY SUM(i2.net_amount) DESC, c2.name LIMIT 1)
+    - user: "What is the average value of those orders?"
+      gold_sql: |
+        SELECT AVG(o.total_amount) AS avg_order_value FROM sales_orders o JOIN sales_customers c ON c.id = o.customer_id
+        WHERE o.status NOT IN ('DRAFT','CANCELLED')
+          AND c.name = (SELECT c2.name FROM fin_customer_invoices i2 JOIN sales_customers c2 ON c2.id = i2.partner_id
+                        WHERE i2.status IN ('POSTED','PARTIALLY_PAID','PAID') GROUP BY c2.name ORDER BY SUM(i2.net_amount) DESC, c2.name LIMIT 1)
+    - user: "What is their credit limit?"
+      gold_sql: |
+        SELECT c.credit_limit FROM sales_customers c
+        WHERE c.name = (SELECT c2.name FROM fin_customer_invoices i2 JOIN sales_customers c2 ON c2.id = i2.partner_id
+                        WHERE i2.status IN ('POSTED','PARTIALLY_PAID','PAID') GROUP BY c2.name ORDER BY SUM(i2.net_amount) DESC, c2.name LIMIT 1)
+    - user: "How much of that limit is currently used by unpaid invoices?"
+      gold_sql: |
+        SELECT COALESCE(SUM(i.open_amount), 0) AS used_credit
+        FROM fin_customer_invoices i JOIN sales_customers c ON c.id = i.partner_id
+        WHERE i.status IN ('POSTED','PARTIALLY_PAID') AND i.open_amount > 0
+          AND c.name = (SELECT c2.name FROM fin_customer_invoices i2 JOIN sales_customers c2 ON c2.id = i2.partner_id
+                        WHERE i2.status IN ('POSTED','PARTIALLY_PAID','PAID') GROUP BY c2.name ORDER BY SUM(i2.net_amount) DESC, c2.name LIMIT 1)
+
+- id: crm_lead_chain_6
+  tenant: acme
+  split: dev
+  tags: [crm, multi_turn, six_turn]
+  turns:
+    - user: "How many leads do we have by status?"
+      gold_sql: |
+        SELECT status, COUNT(*) AS leads FROM crm_leads GROUP BY status
+    - user: "Show the new ones with their company and estimated value."
+      gold_sql: |
+        SELECT lead_number, company_name, estimated_value FROM crm_leads WHERE status = 'NEW'
+    - user: "Which has the highest estimated value?"
+      gold_sql: |
+        SELECT lead_number, company_name, estimated_value FROM crm_leads WHERE status = 'NEW'
+        ORDER BY estimated_value DESC, lead_number LIMIT 1
+    - user: "Which source did that lead come from?"
+      gold_sql: |
+        SELECT source FROM crm_leads WHERE status = 'NEW' ORDER BY estimated_value DESC, lead_number LIMIT 1
+    - user: "Is there an open opportunity for the same company?"
+      gold_sql: |
+        SELECT o.opportunity_number, o.name, o.stage, o.estimated_value
+        FROM crm_opportunities o
+        WHERE o.stage NOT IN ('WON','LOST')
+          AND o.company_name = (SELECT company_name FROM crm_leads WHERE status = 'NEW' ORDER BY estimated_value DESC, lead_number LIMIT 1)
+    - user: "What is its probability weighted value?"
+      gold_sql: |
+        SELECT o.estimated_value * o.probability_percent / 100.0 AS weighted_value
+        FROM crm_opportunities o
+        WHERE o.stage NOT IN ('WON','LOST')
+          AND o.company_name = (SELECT company_name FROM crm_leads WHERE status = 'NEW' ORDER BY estimated_value DESC, lead_number LIMIT 1)

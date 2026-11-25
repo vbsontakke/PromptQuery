@@ -1,0 +1,36 @@
+# Columns whose Atlas model declares no enum default, so gen_pack_skeleton cannot link them.
+# Value is an Atlas StrEnum class name, or an explicit list of legal values.
+fin_accounts:
+  account_type: AccountType
+  normal_balance: NormalBalance
+  cash_flow_category: CashFlowCategory
+fin_journal_lines:
+  partner_type: [CUSTOMER, VENDOR]
+fin_assets:
+  depreciation_method: DepreciationMethod
+crm_activities:
+  activity_type: ActivityType
+inv_items:
+  item_type: ItemType
+  costing_method: CostingMethod
+inv_stock_moves:
+  move_type: MoveType
+inv_serials:
+  status: SerialStatus
+inv_stock_counts:
+  status: CountStatus
+  count_type: CountType
+mfg_planned_orders:
+  order_type: PlannedOrderType
+pm_maintenance_plans:
+  interval_unit: IntervalUnit
+qm_inspection_lots:
+  disposition: RejectDisposition
+sales_orders:
+  credit_check_status: CreditCheckStatus
+sales_order_lines:
+  discount_type: DiscountType
+sales_quote_lines:
+  discount_type: DiscountType
+sales_billing_lines:
+  discount_type: DiscountType

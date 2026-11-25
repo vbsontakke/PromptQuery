@@ -16,7 +16,7 @@ A question **passes** if every must-retrieve table is in the final post-FK-expan
 
 Retrieval is the headline differentiator. If the retriever misses the relevant tables, no amount of LLM cleverness will produce correct SQL — so retrieval quality dominates end-to-end accuracy. Isolating it from the LLM also removes nondeterminism: the eval is **pure-Python, free, and runs in <100 ms for the full suite**.
 
-The full end-to-end eval (LLM generation + execution comparison against reference SQL) is intentionally not here. It requires a live Postgres + an API key, and the signal is muddied by LLM variance. It's planned for a separate `eval/end_to_end.py` once we add Docker fixtures.
+End-to-end evaluation (LLM generation + execution comparison against reference SQL) lives in separate runners because it needs a live Postgres and an API key, and the signal carries LLM variance: `eval/end_to_end.py` (shop schema, result-set equality), `eval/parsing_bench.py` (table-reference check on large schemas) and `eval/atlas/` (multi-turn Atlas scenarios, below).
 
 ## Run it
 
@@ -68,8 +68,23 @@ To benchmark a different schema:
 3. Author a `questions/<name>.py` exporting a `QUESTIONS` list.
 4. Add a CLI flag or a new module under `eval/` for it.
 
+## Atlas multi-turn evaluation (`eval/atlas/`)
+
+92 scenarios / 197 turns (16 six-turn conversations) against a seeded Atlas ERP database, each turn
+with a gold SQL scored by execution accuracy through the same tenant-scoped, read-only path the
+bot uses. Metrics: end-to-end and teacher-forced per-turn accuracy, per-scenario accuracy, by
+module/turn index, refusal accuracy, repair rate. Run, tune on `dev`, and use `heldout` sparingly:
+
+```bash
+python -m eval.atlas.run --split dev --mode both --cache .cache/llm --out report.json
+python -m eval.atlas.run --split all --oracle      # harness self-check, no API key
+python -m eval.atlas.run --split dev --fail-under 0.95
+```
+
+Full description, scenario format and setup: [docs/ATLAS.md](../docs/ATLAS.md).
+
 ## Roadmap
 
-- **End-to-end suite** — Docker Postgres + Pagila/shop, runs the full pipeline, scores via result-set equality. Requires API key.
+- **End-to-end suite** — implemented (`end_to_end.py`, `atlas/`); results from older runs under `eval/results*.json` predate the v0.2 pipeline and are kept as receipts only.
 - **Scaled retrieval suite** — inject N=100/500/1000 noise tables into the fixture to test retrieval-at-scale (the headline pitch). Pass criteria becomes "must-retrieve still in top 20 with 1000-table haystack."
 - **Cross-tool comparison** — adapters that run Vanna, WrenAI, LangChain SQLDatabaseChain, and LlamaIndex against the same suite. The public benchmark post writes itself.

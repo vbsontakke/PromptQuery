@@ -22,6 +22,8 @@ PromptQuery is an open-source CLI that lets you query Postgres in plain English 
 
 ---
 
+> **Atlas report bot.** This fork adds a multi-turn, tenant-safe report bot for the Atlas ERP database: see [docs/ATLAS.md](docs/ATLAS.md).
+
 ## The numbers
 
 ### Execution accuracy — 211-table benchmark, v0.3.0

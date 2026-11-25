@@ -1,0 +1,272 @@
+# Procurement and inventory scenarios. As-of date: 2026-07-06.
+# Counted purchase orders exclude DRAFT, REJECTED, CANCELLED. Open POs: APPROVED/SENT/PARTIALLY_RECEIVED.
+
+- id: proc_vendor_chain_6
+  tenant: acme
+  split: dev
+  tags: [procurement, multi_turn, six_turn]
+  turns:
+    - user: "What is the total purchase order value for each vendor?"
+      gold_sql: |
+        SELECT v.name, SUM(p.total_amount) AS po_value
+        FROM proc_purchase_orders p JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY v.name
+    - user: "Which vendor do we spend the most with?"
+      gold_sql: |
+        SELECT v.name, SUM(p.total_amount) AS po_value
+        FROM proc_purchase_orders p JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY v.name ORDER BY po_value DESC, v.name LIMIT 1
+    - user: "List that vendor's purchase orders."
+      gold_sql: |
+        SELECT p.po_number, p.status, p.order_date, p.total_amount
+        FROM proc_purchase_orders p JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+          AND v.name = (SELECT v2.name FROM proc_purchase_orders p2 JOIN proc_vendors v2 ON v2.id = p2.vendor_id
+                        WHERE p2.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+                        GROUP BY v2.name ORDER BY SUM(p2.total_amount) DESC, v2.name LIMIT 1)
+    - user: "Which of those are closed?"
+      gold_sql: |
+        SELECT p.po_number, p.order_date, p.total_amount
+        FROM proc_purchase_orders p JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status = 'CLOSED'
+          AND v.name = (SELECT v2.name FROM proc_purchase_orders p2 JOIN proc_vendors v2 ON v2.id = p2.vendor_id
+                        WHERE p2.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+                        GROUP BY v2.name ORDER BY SUM(p2.total_amount) DESC, v2.name LIMIT 1)
+    - user: "What items were on those closed orders?"
+      gold_sql: |
+        SELECT p.po_number, i.item_code, i.name, l.quantity, l.unit_cost
+        FROM proc_purchase_order_lines l JOIN proc_purchase_orders p ON p.id = l.po_id JOIN inv_items i ON i.id = l.item_id
+        JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status = 'CLOSED'
+          AND v.name = (SELECT v2.name FROM proc_purchase_orders p2 JOIN proc_vendors v2 ON v2.id = p2.vendor_id
+                        WHERE p2.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+                        GROUP BY v2.name ORDER BY SUM(p2.total_amount) DESC, v2.name LIMIT 1)
+    - user: "How much of each of those items did we actually receive?"
+      gold_sql: |
+        SELECT i.item_code, SUM(l.received_quantity) AS received
+        FROM proc_purchase_order_lines l JOIN proc_purchase_orders p ON p.id = l.po_id JOIN inv_items i ON i.id = l.item_id
+        JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status = 'CLOSED'
+          AND v.name = (SELECT v2.name FROM proc_purchase_orders p2 JOIN proc_vendors v2 ON v2.id = p2.vendor_id
+                        WHERE p2.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+                        GROUP BY v2.name ORDER BY SUM(p2.total_amount) DESC, v2.name LIMIT 1)
+        GROUP BY i.item_code
+
+- id: inv_volume_item_6
+  tenant: volume
+  split: heldout
+  tags: [inventory, multi_turn, six_turn, volume]
+  turns:
+    - user: "What is our total inventory value?"
+      gold_sql: |
+        SELECT SUM(total_value) AS inventory_value FROM inv_item_valuations
+    - user: "Show the 10 most valuable items."
+      gold_sql: |
+        SELECT i.item_code, i.name, v.total_value
+        FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id
+        ORDER BY v.total_value DESC, i.item_code LIMIT 10
+      compare: {order: true}
+    - user: "How many units of the most valuable one do we have on hand?"
+      gold_sql: |
+        SELECT SUM(q.on_hand_qty) AS on_hand
+        FROM inv_stock_quants q
+        WHERE q.item_id = (SELECT v.item_id FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id
+                           ORDER BY v.total_value DESC, i.item_code LIMIT 1)
+    - user: "How many stock movements has that item had?"
+      gold_sql: |
+        SELECT COUNT(*) AS movements FROM inv_stock_moves m
+        WHERE m.item_id = (SELECT v.item_id FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id
+                           ORDER BY v.total_value DESC, i.item_code LIMIT 1)
+    - user: "Show those movements split by type with the total quantity."
+      gold_sql: |
+        SELECT m.move_type, COUNT(*) AS movements, SUM(m.quantity) AS quantity FROM inv_stock_moves m
+        WHERE m.item_id = (SELECT v.item_id FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id
+                           ORDER BY v.total_value DESC, i.item_code LIMIT 1)
+        GROUP BY m.move_type
+    - user: "When was its most recent movement?"
+      gold_sql: |
+        SELECT MAX(m.move_date) AS last_movement FROM inv_stock_moves m
+        WHERE m.item_id = (SELECT v.item_id FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id
+                           ORDER BY v.total_value DESC, i.item_code LIMIT 1)
+
+- id: inv_acme_stock_4
+  tenant: acme
+  split: dev
+  tags: [inventory, multi_turn]
+  turns:
+    - user: "How much stock do we have on hand for each item?"
+      gold_sql: |
+        SELECT i.item_code, i.name, SUM(q.on_hand_qty) AS on_hand
+        FROM inv_stock_quants q JOIN inv_items i ON i.id = q.item_id GROUP BY i.item_code, i.name
+    - user: "What is the value of that stock?"
+      gold_sql: |
+        SELECT i.item_code, v.total_value
+        FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id
+    - user: "Which item holds the most value?"
+      gold_sql: |
+        SELECT i.item_code, i.name, v.total_value
+        FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id
+        ORDER BY v.total_value DESC, i.item_code LIMIT 1
+    - user: "What is its average unit cost?"
+      gold_sql: |
+        SELECT v.avg_unit_cost
+        FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id
+        WHERE i.item_code = (SELECT i2.item_code FROM inv_item_valuations v2 JOIN inv_items i2 ON i2.id = v2.item_id
+                             ORDER BY v2.total_value DESC, i2.item_code LIMIT 1)
+
+- id: proc_status_counts_3
+  tenant: manufacturing
+  split: heldout
+  tags: [procurement, multi_turn]
+  turns:
+    - user: "How many purchase orders do we have in each status?"
+      gold_sql: |
+        SELECT status, COUNT(*) AS purchase_orders FROM proc_purchase_orders GROUP BY status
+    - user: "Show the total value for the received ones by vendor."
+      gold_sql: |
+        SELECT v.name, SUM(p.total_amount) AS po_value
+        FROM proc_purchase_orders p JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status = 'RECEIVED' GROUP BY v.name
+    - user: "Which vendor has the highest total?"
+      gold_sql: |
+        SELECT v.name, SUM(p.total_amount) AS po_value
+        FROM proc_purchase_orders p JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status = 'RECEIVED' GROUP BY v.name ORDER BY po_value DESC, v.name LIMIT 1
+
+- id: proc_spend_by_vendor
+  tenant: manufacturing
+  split: dev
+  tags: [procurement, single]
+  turns:
+    - user: "How much have we spent with each vendor on purchase orders?"
+      gold_sql: |
+        SELECT v.name, SUM(p.total_amount) AS spend
+        FROM proc_purchase_orders p JOIN proc_vendors v ON v.id = p.vendor_id
+        WHERE p.status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY v.name
+
+- id: proc_item_quantities
+  tenant: acme
+  split: heldout
+  tags: [procurement, single]
+  turns:
+    - user: "What total quantity of each item have we ordered from vendors?"
+      gold_sql: |
+        SELECT i.item_code, i.name, SUM(l.quantity) AS ordered_quantity
+        FROM proc_purchase_order_lines l JOIN proc_purchase_orders p ON p.id = l.po_id JOIN inv_items i ON i.id = l.item_id
+        WHERE p.status NOT IN ('DRAFT','REJECTED','CANCELLED') GROUP BY i.item_code, i.name
+
+- id: proc_matches_by_status
+  tenant: acme
+  split: dev
+  tags: [procurement, single]
+  turns:
+    - user: "How many invoice matches are there per status?"
+      gold_sql: |
+        SELECT status, COUNT(*) AS matches FROM proc_invoice_matches GROUP BY status
+
+- id: proc_receipts_by_month
+  tenant: acme
+  split: heldout
+  tags: [procurement, single]
+  turns:
+    - user: "How many goods receipts did we post each month?"
+      gold_sql: |
+        SELECT date_trunc('month', receipt_date)::date AS month, COUNT(*) AS receipts
+        FROM proc_goods_receipts WHERE status = 'POSTED' GROUP BY 1
+
+- id: proc_vendor_payment_terms
+  tenant: acme
+  split: dev
+  tags: [procurement, single]
+  turns:
+    - user: "List our vendors and their payment terms in days."
+      gold_sql: |
+        SELECT name, payment_terms_days FROM proc_vendors
+
+- id: proc_requisitions
+  tenant: manufacturing
+  split: heldout
+  tags: [procurement, single]
+  turns:
+    - user: "How many purchase requisitions are there in each status?"
+      gold_sql: |
+        SELECT status, COUNT(*) AS requisitions FROM proc_requisitions GROUP BY status
+
+- id: inv_value_total
+  tenant: acme
+  split: dev
+  tags: [inventory, single]
+  turns:
+    - user: "What is the current inventory value?"
+      gold_sql: |
+        SELECT COALESCE(SUM(total_value), 0) AS inventory_value FROM inv_item_valuations
+
+- id: inv_moves_by_type
+  tenant: acme
+  split: heldout
+  tags: [inventory, single]
+  turns:
+    - user: "Summarise stock movements by type with the number of movements and total quantity."
+      gold_sql: |
+        SELECT move_type, COUNT(*) AS movements, SUM(quantity) AS total_quantity FROM inv_stock_moves GROUP BY move_type
+
+- id: inv_item_types
+  tenant: hospitality
+  split: dev
+  tags: [inventory, single]
+  turns:
+    - user: "How many items do we have of each item type?"
+      gold_sql: |
+        SELECT item_type, COUNT(*) AS items FROM inv_items GROUP BY item_type
+
+- id: inv_fifo_layers
+  tenant: retail
+  split: heldout
+  tags: [inventory, single]
+  turns:
+    - user: "What is the remaining FIFO stock value for each item?"
+      gold_sql: |
+        SELECT i.item_code, SUM(c.remaining_qty * c.unit_cost) AS remaining_value
+        FROM inv_cost_layers c JOIN inv_items i ON i.id = c.item_id GROUP BY i.item_code
+
+- id: inv_volume_moves_2026
+  tenant: volume
+  split: dev
+  tags: [inventory, single, volume]
+  turns:
+    - user: "How many stock movements were there in each month of 2026?"
+      gold_sql: |
+        SELECT date_trunc('month', move_date)::date AS month, COUNT(*) AS movements
+        FROM inv_stock_moves WHERE move_date >= DATE '2026-01-01' AND move_date <= DATE '2026-07-06' GROUP BY 1
+
+- id: inv_volume_received_vs_issued
+  tenant: volume
+  split: heldout
+  tags: [inventory, single, volume]
+  turns:
+    - user: "Compare the total quantity received and issued during 2025."
+      gold_sql: |
+        SELECT move_type, SUM(quantity) AS quantity FROM inv_stock_moves
+        WHERE move_type IN ('RECEIPT','ISSUE') AND move_date >= DATE '2025-01-01' AND move_date < DATE '2026-01-01'
+        GROUP BY move_type
+
+- id: inv_volume_item_count
+  tenant: volume
+  split: dev
+  tags: [inventory, single, volume]
+  turns:
+    - user: "How many active stocked items are in the catalogue?"
+      gold_sql: |
+        SELECT COUNT(*) AS items FROM inv_items WHERE item_type = 'STOCKED' AND is_active
+
+- id: inv_volume_top_valued
+  tenant: volume
+  split: heldout
+  tags: [inventory, single, volume]
+  turns:
+    - user: "List the five items with the highest stock value."
+      gold_sql: |
+        SELECT i.item_code, i.name, v.total_value
+        FROM inv_item_valuations v JOIN inv_items i ON i.id = v.item_id
+        ORDER BY v.total_value DESC, i.item_code LIMIT 5
+      compare: {order: true}

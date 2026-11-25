@@ -1,6 +1,6 @@
 # PromptQuery — Architecture
 
-This document explains how PromptQuery is structured internally. It's written for contributors and the curious. For usage, see the [README](README.md).
+This document explains how PromptQuery is structured internally. It's written for contributors and the curious. For usage, see the [README](README.md). This file covers two pipelines: the original single-turn CLI (below) and the multi-turn **Atlas report bot** (see [Atlas report bot pipeline](#atlas-report-bot-pipeline); full detail in [docs/ATLAS.md](docs/ATLAS.md)).
 
 ## The request lifecycle
 
@@ -95,6 +95,13 @@ question
 | `repair.py`       | Execution-guided repair: bounded retry loop fed by the database's errors. |
 | `safety.py`       | The sqlglot-based query guard.                                            |
 | `render.py`       | SQL syntax rendering and result-table rendering with rich.                |
+| `engine.py`       | Atlas bot: `Engine.ask(session_id, text)`, the single multi-turn entry point. |
+| `bootstrap.py`    | Atlas bot: environment settings -> a ready `Engine`.                      |
+| `atlas_cli.py`    | Atlas bot CLI (`prq-atlas ask` / `chat`).                                 |
+| `audit.py`        | Atlas bot: append-only JSONL audit trail.                                 |
+| `api/app.py`      | Atlas bot: FastAPI service (`/chat`, `/sessions`), optional API key.      |
+| `conversation/`   | Atlas bot: session state, follow-up rewriting, untrusted-data fencing.    |
+| `atlas/`          | Atlas bot: curated schema pack, examples, as-of date, role/RLS SQL generator. |
 
 ## File relationships
 
@@ -121,9 +128,18 @@ Many natural-language questions reference one core entity but require joins thro
 
 This redundancy is not paranoia. AI-generated SQL is, by construction, less predictable than human-written SQL. The cost of one accidental `DELETE` is high enough that doubling up is the only sensible default.
 
+### The Atlas path adds more layers
+
+The Atlas bot does not rely on those two layers alone: a restricted database role with an
+allowlist of tables and columns, Row-Level Security keyed on the tenant, SQL-level tenant scoping,
+an allowlist validator (`safety.validate_report_query`), per-call read-only transactions with row
+caps and timeouts. See [docs/ATLAS.md](docs/ATLAS.md). The original `promptquery` CLI is unchanged
+in behaviour apart from a stricter `validate_select_only` (it now also rejects `SELECT ... INTO`,
+`FOR UPDATE`, `SET`/transaction control and more server-admin functions).
+
 ### Why introspect via `pg_catalog` instead of `information_schema`
 
-`pg_catalog` is faster, more complete, and lets us read table comments via `obj_description`. We use `LATERAL unnest WITH ORDINALITY` to join `pg_constraint.conkey` with `pg_constraint.confkey` by ordinal position — the only correct way to handle composite foreign keys.
+`pg_catalog` is faster, more complete, and lets us read table comments via `obj_description`. We use `LATERAL unnest WITH ORDINALITY` to join `pg_constraint.conkey` with `pg_constraint.confkey` by ordinal position — the only correct way to handle composite foreign keys. For multi-tenant schemas such as Atlas, where every FK is `(tenant_id, x_id)`, the `tenant_id` half of a composite FK is dropped: otherwise every table would link to every other.
 
 ## What's intentionally not here
 
@@ -132,44 +148,55 @@ These are out of scope for now. They are tracked in the [roadmap](README.md#road
 - MySQL / SQLite support — needs an adapter abstraction first.
 - Multi-database sessions in one REPL.
 - Data visualization (charts, plots).
-- Query-history persistence between sessions.
+- Query-history persistence between sessions in the original CLI (the Atlas bot keeps in-memory multi-turn sessions).
 - Embedding-based retrieval.
 - MCP server mode.
 
 ## Testing
 
-Run the test suite:
-
 ```bash
-pytest
+pytest                      # offline: no database or API key needed
+PQ_TEST_OWNER_DSN=... PQ_TEST_BOT_DSN=... pytest    # also runs the live Atlas tests
 ```
 
-All tests are pure Python — no live database or API key required. The repair loop, prompt serialization, safety guard, retrieval, and CLI outcome logic are covered with in-memory fakes.
+Offline tests use in-memory fakes for the repair loop, prompt serialization, safety guards,
+retrieval, the engine (scripted model and fake database), the API and the evaluation comparator.
+With a seeded Atlas database (see [docs/ATLAS.md](docs/ATLAS.md)) the live tests also check the
+role/RLS boundary, tenant isolation, schema-pack drift, every metric, example and scenario query,
+and full-stack conversations.
 
-The most safety-critical file is `tests/test_safety.py`. Cases there encode "things the validator MUST reject." Add cases when you discover new attack vectors; do not delete cases during refactors.
+The most safety-critical files are `tests/test_safety.py` and `tests/test_safety_report.py`. Cases
+there encode "things the validator MUST reject." Add cases when you discover new attack vectors; do
+not delete cases during refactors.
+
+## Atlas report bot pipeline
+
+```
+question -> conversation/rewrite.py   classify follow-up, resolve "the first one" from real rows
+         -> atlas/examples.py          retrieve similar verified Q->SQL examples
+         -> engine.py + atlas/prompts  generate <plan> + SQL from the curated pack
+         -> atlas/asof.py              pin CURRENT_DATE/now() to the as-of date
+         -> safety.validate_report_query   allowlists, star expansion, tenant scoping, LIMIT
+         -> db.run_scoped              BEGIN READ ONLY, tenant set, timeout, row cap
+         -> repair loop                validator error / DB error / suspicious empty result
+         -> summary + audit.py
+```
 
 ## Project layout
 
 ```
-PromptQuery/
+promptquery/
 ├── ARCHITECTURE.md          this file
-├── LICENSE                  Apache-2.0
-├── README.md                user-facing intro and install/usage
-├── pyproject.toml           hatchling, scripts: promptquery + prq
-├── src/promptquery/         the package
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── cli.py
-│   ├── db.py
-│   ├── schema.py
-│   ├── retrieval.py
-│   ├── llm.py
-│   ├── prompts.py
-│   ├── safety.py
-│   └── render.py
-└── tests/                   pytest suite
-    ├── test_safety.py
-    └── test_retrieval.py
+├── docs/ATLAS.md            Atlas report bot guide (setup, safety model, evaluation)
+├── pyproject.toml           hatchling; scripts: promptquery, prq, pquery, prq-atlas
+├── Dockerfile, .env.example report-bot service packaging and configuration
+├── sql/atlas_bot_role.sql   generated role + grants + RLS for Atlas
+├── src/promptquery/         the package (see the file inventory above)
+│   ├── atlas/pack/          curated schema pack (tables, enums, joins, metrics, glossary, examples)
+│   ├── conversation/        multi-turn state and follow-up handling
+│   └── api/                 FastAPI service
+├── eval/                    original benchmarks; eval/atlas/ is the multi-turn Atlas harness
+└── tests/                   pytest suite (offline + optional live Atlas tests)
 ```
 
 ## Contributing

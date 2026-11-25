@@ -1,0 +1,45 @@
+# Business vocabulary -> Atlas terms. Users say "product", "supplier", "client"; Atlas calls
+# them item, vendor, customer (canonical-terminology lock in Atlas's CLAUDE.md).
+terms:
+  product: item (inv_items)
+  products: items (inv_items)
+  sku: item (inv_items.item_code)
+  material: item (inv_items)
+  supplier: vendor (proc_vendors)
+  suppliers: vendors (proc_vendors)
+  client: customer (sales_customers)
+  clients: customers (sales_customers)
+  invoice: customer invoice (fin_customer_invoices) when about money owed to us; vendor bill (fin_vendor_bills) when about money we owe
+  bill: vendor bill (fin_vendor_bills)
+  receivable: customer invoice open_amount (AR)
+  payable: vendor bill open_amount (AP)
+  PO: purchase order (proc_purchase_orders)
+  SO: sales order (sales_orders)
+  GL: general ledger = journal lines (fin_journal_lines)
+  ledger: journal lines (fin_journal_lines) joined to fin_accounts
+  journal: journal entry (fin_journal_entries) and lines (fin_journal_lines)
+  stock: inventory quantity (inv_stock_quants / inv_stock_moves)
+  inventory: items held in warehouses (inv_stock_quants, inv_item_valuations)
+  employee: hr_employees
+  staff: hr_employees
+  department: hr_departments
+  headcount: count of ACTIVE employees
+  WIP: work in progress on production orders (mfg_production_orders.accumulated_wip_cost)
+  BOM: bill of materials (mfg_boms, mfg_bom_components)
+  lead: crm_leads
+  opportunity: crm_opportunities
+  deal: crm_opportunities
+  pipeline: open crm_opportunities (stage not WON/LOST)
+  project: ps_projects
+  asset: fixed asset (fin_assets)
+  equipment: maintenance equipment (pm_equipment)
+  reservation: hospitality table reservation (hsp_table_reservations)
+  ticket: restaurant order ticket (hsp_order_tickets)
+  "this month": calendar month of the as-of date
+  "last month": the calendar month before the as-of date
+  "this quarter": calendar quarter of the as-of date
+  "last quarter": the calendar quarter before the as-of date
+  "this year": calendar year of the as-of date
+  "last year": the calendar year before the as-of date
+  "ytd": from January 1 of the as-of year through the as-of date
+  "today": the as-of date

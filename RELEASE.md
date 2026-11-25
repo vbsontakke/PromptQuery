@@ -54,7 +54,7 @@ gh release create vX.Y.Z --notes-file path/to/notes.md
 ```bash
 # Wait ~30 seconds for PyPI to index, then in a fresh venv:
 python3 -m venv /tmp/pq-verify && /tmp/pq-verify/bin/pip install promptquery
-/tmp/pq-verify/bin/prq --version    # should print 0.2.0 (or whichever version)
+/tmp/pq-verify/bin/prq --version    # should print the version in pyproject.toml
 ```
 
 ## Yanking a bad release
